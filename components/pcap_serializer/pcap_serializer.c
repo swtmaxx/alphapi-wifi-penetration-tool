@@ -39,7 +39,7 @@ static const char *TAG = "pcap_serializer";
 
 static unsigned pcap_size = 0;
 static FILE *pcap_file = NULL;
-static char pcap_cur_path[64] = PCAP_FILE_PATH;
+static char pcap_cur_path[96] = PCAP_FILE_PATH;
 static unsigned pcap_file_index = 1;
 static char pcap_ssid_tag[PCAP_SSID_TAG_MAX + 1] = "";
 static uint8_t write_buf[WRITE_BUF_SIZE];
@@ -139,6 +139,22 @@ static void build_ssid_tag(const uint8_t *ssid, unsigned len)
         while (out > 0 && pcap_ssid_tag[out - 1] == '_') out--;
     }
     pcap_ssid_tag[out] = '\0';
+}
+
+/**
+ * @brief Join the capture directory with a file name, rejecting overlong input.
+ *
+ * @return true when the joined path fits in out.
+ */
+static bool build_full_path(char *out, size_t out_size, const char *name)
+{
+    static const char prefix[] = PCAP_BASE_PATH "/";
+    size_t prefix_len = sizeof(prefix) - 1;
+    size_t name_len = strlen(name);
+    if (prefix_len + name_len + 1 > out_size) return false;
+    memcpy(out, prefix, prefix_len);
+    memcpy(out + prefix_len, name, name_len + 1);
+    return true;
 }
 
 static void pick_next_capture_path(void)
@@ -327,7 +343,7 @@ unsigned pcap_serializer_list(pcap_file_info_t *out, unsigned max)
             if (sscanf(ent->d_name, "capture_%u", &idx) != 1) continue;
 
             char full[96];
-            snprintf(full, sizeof(full), PCAP_BASE_PATH "/%s", ent->d_name);
+            if (!build_full_path(full, sizeof(full), ent->d_name)) continue;
             struct stat st;
             if (stat(full, &st) != 0) continue;
 
@@ -357,8 +373,11 @@ bool pcap_serializer_read_file(const char *name, unsigned offset, uint8_t *buf, 
         return false;
     }
 
-    char full[80];
-    snprintf(full, sizeof(full), PCAP_BASE_PATH "/%s", name);
+    char full[96];
+    if (!build_full_path(full, sizeof(full), name)) {
+        unlock_serializer();
+        return false;
+    }
 
     bool ok = false;
     struct stat st;
