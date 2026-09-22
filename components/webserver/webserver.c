@@ -16,6 +16,8 @@
 #include "webserver.h"
 
 #define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
+#include <string.h>
+#include <stdio.h>
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_event.h"
@@ -41,7 +43,8 @@ ESP_EVENT_DEFINE_BASE(WEBSERVER_EVENTS);
  * @{
  */
 static esp_err_t uri_root_get_handler(httpd_req_t *req) {
-    httpd_resp_set_type(req, "text/html");
+    /* charset is required so the browser renders the Chinese UI correctly. */
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
     return httpd_resp_send(req, (const char *)page_index, page_index_len);
 }
@@ -102,15 +105,16 @@ static esp_err_t uri_ap_list_get_handler(httpd_req_t *req) {
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "无法读取扫描结果");
     }
 
-    // 33 SSID + 6 BSSID + 1 RSSI
-    char resp_chunk[40];
+    // 33 SSID + 6 BSSID + 1 RSSI + 1 client count
+    char resp_chunk[41];
 
     ESP_ERROR_CHECK(httpd_resp_set_type(req, HTTPD_TYPE_OCTET));
     for (unsigned i = 0; i < ap_records.count; i++) {
         memcpy(resp_chunk, ap_records.records[i].ssid, 33);
         memcpy(&resp_chunk[33], ap_records.records[i].bssid, 6);
         memcpy(&resp_chunk[39], &ap_records.records[i].rssi, 1);
-        ESP_ERROR_CHECK(httpd_resp_send_chunk(req, resp_chunk, 40));
+        resp_chunk[40] = (char) wifictl_get_client_count(ap_records.records[i].bssid);
+        ESP_ERROR_CHECK(httpd_resp_send_chunk(req, resp_chunk, 41));
     }
     return httpd_resp_send_chunk(req, NULL, 0);
 }
@@ -250,6 +254,122 @@ static httpd_uri_t uri_capture_hccapx_get = {
 };
 //@}
 
+/**
+ * @brief Handlers for \c /pcap-list endpoint
+ *
+ * Returns a JSON array describing every stored capture file so the UI can
+ * offer per-file and bulk download.
+ * @param req
+ * @return esp_err_t
+ * @{
+ */
+static esp_err_t uri_pcap_list_get_handler(httpd_req_t *req) {
+    static pcap_file_info_t files[PCAP_LIST_MAX];
+    unsigned count = pcap_serializer_list(files, PCAP_LIST_MAX);
+
+    httpd_resp_set_type(req, "application/json; charset=utf-8");
+    esp_err_t res = httpd_resp_send_chunk(req, "[", 1);
+    for (unsigned i = 0; i < count && res == ESP_OK; i++) {
+        char chunk[96];
+        int len = snprintf(chunk, sizeof(chunk), "%s{\"name\":\"%s\",\"size\":%u}",
+                           i == 0 ? "" : ",", files[i].name, files[i].size);
+        res = httpd_resp_send_chunk(req, chunk, len);
+    }
+    if (res == ESP_OK) res = httpd_resp_send_chunk(req, "]", 1);
+    if (res == ESP_OK) res = httpd_resp_send_chunk(req, NULL, 0);
+    return res;
+}
+
+static httpd_uri_t uri_pcap_list_get = {
+    .uri = "/pcap-list",
+    .method = HTTP_GET,
+    .handler = uri_pcap_list_get_handler,
+    .user_ctx = NULL
+};
+//@}
+
+/**
+ * @brief Handlers for \c /capture-file endpoint
+ *
+ * Streams one stored capture file, selected by the \c name query parameter.
+ * @param req
+ * @return esp_err_t
+ * @{
+ */
+static esp_err_t uri_capture_file_get_handler(httpd_req_t *req) {
+    char query[96];
+    char name[40] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "name", name, sizeof(name)) != ESP_OK) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "缺少文件参数");
+    }
+
+    /* Resolve the stored size first so the final partial chunk is not lost. */
+    static pcap_file_info_t files[PCAP_LIST_MAX];
+    unsigned count = pcap_serializer_list(files, PCAP_LIST_MAX);
+    unsigned total = 0;
+    bool found = false;
+    for (unsigned i = 0; i < count; i++) {
+        if (strcmp(files[i].name, name) == 0) {
+            total = files[i].size;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "文件不存在");
+    }
+
+    httpd_resp_set_type(req, HTTPD_TYPE_OCTET);
+    char disposition[64];
+    snprintf(disposition, sizeof(disposition), "attachment; filename=\"%s\"", name);
+    httpd_resp_set_hdr(req, "Content-Disposition", disposition);
+
+    uint8_t chunk[2048];
+    unsigned offset = 0;
+    esp_err_t res = ESP_OK;
+    while (offset < total && res == ESP_OK) {
+        unsigned len = (total - offset) > sizeof(chunk) ? sizeof(chunk) : (total - offset);
+        if (!pcap_serializer_read_file(name, offset, chunk, len)) {
+            res = ESP_FAIL;
+            break;
+        }
+        res = httpd_resp_send_chunk(req, (const char *)chunk, len);
+        offset += len;
+    }
+    if (res == ESP_OK) res = httpd_resp_send_chunk(req, NULL, 0);
+    return res;
+}
+
+static httpd_uri_t uri_capture_file_get = {
+    .uri = "/capture-file",
+    .method = HTTP_GET,
+    .handler = uri_capture_file_get_handler,
+    .user_ctx = NULL
+};
+//@}
+
+/**
+ * @brief Handlers for \c /count-clients endpoint
+ *
+ * Starts a passive client counting sweep in the background.
+ * @param req
+ * @return esp_err_t
+ * @{
+ */
+static esp_err_t uri_count_clients_post_handler(httpd_req_t *req) {
+    wifictl_start_client_counting();
+    return httpd_resp_send(req, NULL, 0);
+}
+
+static httpd_uri_t uri_count_clients_post = {
+    .uri = "/count-clients",
+    .method = HTTP_POST,
+    .handler = uri_count_clients_post_handler,
+    .user_ctx = NULL
+};
+//@}
+
 void webserver_run(){
     ESP_LOGD(TAG, "Running webserver");
 
@@ -264,4 +384,7 @@ void webserver_run(){
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_status_get));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_capture_pcap_get));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_capture_hccapx_get));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_pcap_list_get));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_capture_file_get));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_count_clients_post));
 }

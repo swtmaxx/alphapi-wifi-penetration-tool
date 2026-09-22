@@ -1,25 +1,175 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
+    <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <title>ESP32 管理热点</title>
     <style>
-        body {
-            width: fit-content;
-        }
-        table, tr, th {
-            border: 1px solid;
-            border-collapse: collapse;
-            text-align: center;
-        }
-        th, td {
-            padding:10px;
-        }
-        tr:hover, tr.selected {
-            background-color: lightblue;
-            cursor:pointer;
-        }
-    </style>
+    :root {
+        --bg: #0b0f17;
+        --surface: #141a24;
+        --surface2: #1b2331;
+        --border: #263043;
+        --text: #e6edf6;
+        --text2: #8ea0b8;
+        --accent: #3b82f6;
+        --accent2: #60a5fa;
+        --green: #22c55e;
+        --yellow: #eab308;
+        --red: #ef4444;
+        --radius: 12px;
+        --radius-sm: 8px;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+        min-height: 100vh;
+        padding: 20px 16px 40px;
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", Roboto, sans-serif;
+        font-size: 15px;
+        line-height: 1.5;
+    }
+    .wrap { max-width: 860px; margin: 0 auto; }
+    h1 {
+        font-size: 22px;
+        font-weight: 600;
+        margin-bottom: 20px;
+        padding-bottom: 14px;
+        border-bottom: 1px solid var(--border);
+    }
+    h2 {
+        font-size: 16px;
+        font-weight: 600;
+        color: var(--text);
+        margin: 22px 0 10px;
+    }
+    section { margin-bottom: 16px; }
+    fieldset {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 16px;
+        margin-bottom: 16px;
+    }
+    legend {
+        padding: 0 8px;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--accent2);
+    }
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14px;
+    }
+    th, td {
+        padding: 10px 12px;
+        text-align: left;
+        border-bottom: 1px solid var(--border);
+    }
+    th {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: .04em;
+        color: var(--text2);
+        font-weight: 600;
+    }
+    tbody tr, table tr[onclick] { cursor: pointer; transition: background .15s; }
+    tbody tr:hover, table tr[onclick]:hover { background: var(--surface2); }
+    tr.selected { background: rgba(59,130,246,.18) !important; }
+    tr.selected td { color: var(--accent2); }
+    label { display: inline-block; min-width: 96px; color: var(--text2); }
+    select, input[type=number] {
+        background: var(--surface2);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        padding: 8px 10px;
+        font-size: 14px;
+        font-family: inherit;
+        min-width: 180px;
+    }
+    select:focus, input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+    button {
+        background: var(--accent);
+        color: #fff;
+        border: 0;
+        border-radius: var(--radius-sm);
+        padding: 9px 16px;
+        font-size: 14px;
+        font-family: inherit;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background .15s;
+    }
+    button:hover { background: var(--accent2); }
+    button.btn-secondary {
+        background: var(--surface2);
+        color: var(--text);
+        border: 1px solid var(--border);
+    }
+    button.btn-secondary:hover { background: var(--border); }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    p { margin: 8px 0; }
+    a { color: var(--accent2); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code {
+        background: var(--surface2);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 1px 5px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 13px;
+    }
+    pre {
+        background: var(--surface2);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        padding: 12px;
+        overflow-x: auto;
+        margin-top: 10px;
+    }
+    pre code { background: none; border: 0; padding: 0; }
+    .badge {
+        display: inline-block;
+        padding: 2px 9px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+        background: var(--surface2);
+        color: var(--text2);
+        border: 1px solid var(--border);
+    }
+    .badge.ok { background: rgba(34,197,94,.12); color: var(--green); border-color: rgba(34,197,94,.3); }
+    .badge.run { background: rgba(234,179,8,.12); color: var(--yellow); border-color: rgba(234,179,8,.3); }
+    .badge.err { background: rgba(239,68,68,.12); color: var(--red); border-color: rgba(239,68,68,.3); }
+    .spinner {
+        display: inline-block;
+        width: 15px; height: 15px;
+        border: 2px solid var(--border);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin .8s linear infinite;
+        vertical-align: -2px;
+        margin-right: 8px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .hint { color: var(--text2); font-size: 13px; }
+    .file-row { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border); }
+    .file-row:last-child { border-bottom: 0; }
+    @media (max-width: 600px) {
+        body { padding: 14px 10px 32px; font-size: 14px; }
+        h1 { font-size: 19px; }
+        th, td { padding: 8px 6px; }
+        table { font-size: 13px; }
+        label { min-width: 100%; margin-bottom: 4px; }
+        select, input[type=number] { width: 100%; min-width: 0; }
+        button { width: 100%; }
+        .row > button { width: auto; flex: 1; }
+    }
+</style>
 </head>
 <body onLoad="getStatus()">
     <h1>ESP32 Wi-Fi 安全测试工具</h1>
@@ -31,9 +181,11 @@
             <fieldset>
                 <legend>选择目标</legend>
                 <table id="ap-list"></table>
-                <p>
+                <p class="row">
                     <button type="button" onClick="refreshAps()">刷新网络</button>
+                    <button type="button" class="btn-secondary" onClick="countClients()">探测客户端</button>
                 </p>
+                <p class="hint">探测会短暂关闭热点逐信道嗅探，完成后需要重新连接本热点。</p>
             </fieldset>
             <fieldset>
                 <legend>攻击参数</legend>
@@ -69,6 +221,16 @@
         <div id="result-meta">正在加载结果，请稍候</div>
         <div id="result-content"></div>
         <button type="button" onClick="resetAttack()">重新配置</button>
+    </section>
+    <section id="captures">
+        <h2>抓包文件</h2>
+        <fieldset>
+            <div class="row">
+                <button type="button" class="btn-secondary" onClick="loadCaptures()">刷新列表</button>
+                <button type="button" onClick="downloadAllCaptures()">下载全部</button>
+            </div>
+            <div id="capture-list"><p class="hint">点击“刷新列表”查看已保存的抓包文件。</p></div>
+        </fieldset>
     </section>
     <script>
     var AttackStateEnum = { READY: 0, RUNNING: 1, FINISHED: 2, TIMEOUT: 3};
@@ -182,13 +344,13 @@
         document.getElementById("ap-list").innerHTML = "正在扫描，可能需要一些时间……";
         var oReq = new XMLHttpRequest();
         oReq.onload = function() {
-            document.getElementById("ap-list").innerHTML = "<th>网络名称</th><th>BSSID</th><th>信号</th>";
+            document.getElementById("ap-list").innerHTML = "<tr><th>网络名称</th><th>BSSID</th><th>信号</th><th>客户端</th></tr>";
             var arrayBuffer = oReq.response;
             if(arrayBuffer) {
                 var byteArray = new Uint8Array(arrayBuffer);
-                for  (let i = 0; i < byteArray.byteLength; i = i + 40) {
+                for  (let i = 0; i + 41 <= byteArray.byteLength; i = i + 41) {
                     var tr = document.createElement('tr');
-                    tr.setAttribute("id", i / 40);
+                    tr.setAttribute("id", i / 41);
                     tr.setAttribute("onClick", "selectAp(this)");
                     var td_ssid = document.createElement('td');
                     var td_rssi = document.createElement('td');
@@ -201,6 +363,10 @@
                     tr.appendChild(td_bssid);
                     td_rssi.innerHTML = byteArray[i + 39] - 255;
                     tr.appendChild(td_rssi);
+                    var td_clients = document.createElement('td');
+                    var cc = byteArray[i + 40];
+                    td_clients.innerHTML = '<span class="badge' + (cc > 0 ? ' ok' : '') + '">' + cc + '</span>';
+                    tr.appendChild(td_clients);
                     document.getElementById("ap-list").appendChild(tr);
                 }
             }
@@ -305,7 +471,73 @@
         }
         document.getElementById("result-content").innerHTML += "<pre><code>" + handshakes + "</code></pre>";
     }
-    function uint8ToHex(uint8){
+    function countClients(){
+        var btn = event && event.target ? event.target : null;
+        if(btn) btn.disabled = true;
+        var oReq = new XMLHttpRequest();
+        oReq.onload = function(){ refreshAps(); };
+        oReq.onerror = function(){
+            document.getElementById("errors").innerHTML = "<p class='badge err'>客户端探测请求失败</p>";
+        };
+        oReq.open("POST", "http://192.168.4.1/count-clients", true);
+        oReq.send();
+        setTimeout(function(){ if(btn) btn.disabled = false; }, 1500);
+    }
+    function formatSize(bytes){
+        if(bytes < 1024) return bytes + " B";
+        if(bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+        return (bytes / 1048576).toFixed(2) + " MB";
+    }
+    function loadCaptures(){
+        var box = document.getElementById("capture-list");
+        box.innerHTML = "<p class='hint'><span class='spinner'></span>正在读取文件列表……</p>";
+        var oReq = new XMLHttpRequest();
+        oReq.onload = function(){
+            var list;
+            try { list = JSON.parse(oReq.responseText); } catch(e) { list = null; }
+            if(!list || list.length === 0){
+                box.innerHTML = "<p class='hint'>暂无抓包文件。</p>";
+                return;
+            }
+            box.innerHTML = "";
+            list.forEach(function(f){
+                var row = document.createElement("div");
+                row.className = "file-row";
+                row.innerHTML = "<span><code>" + f.name + "</code> <span class='badge'>" + formatSize(f.size) + "</span></span>";
+                var a = document.createElement("a");
+                a.href = "capture-file?name=" + encodeURIComponent(f.name);
+                a.innerHTML = "<button type='button' class='btn-secondary'>下载</button>";
+                row.appendChild(a);
+                box.appendChild(row);
+            });
+        };
+        oReq.onerror = function(){ box.innerHTML = "<p class='badge err'>读取失败</p>"; };
+        oReq.open("GET", "http://192.168.4.1/pcap-list", true);
+        oReq.send();
+    }
+    function downloadAllCaptures(){
+        var oReq = new XMLHttpRequest();
+        oReq.onload = function(){
+            var list;
+            try { list = JSON.parse(oReq.responseText); } catch(e) { list = null; }
+            if(!list || list.length === 0){
+                document.getElementById("errors").innerHTML = "<p class='badge err'>没有可下载的抓包文件</p>";
+                return;
+            }
+            list.forEach(function(f, index){
+                setTimeout(function(){
+                    var a = document.createElement("a");
+                    a.href = "capture-file?name=" + encodeURIComponent(f.name);
+                    a.download = f.name;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                }, index * 400);
+            });
+        };
+        oReq.open("GET", "http://192.168.4.1/pcap-list", true);
+        oReq.send();
+    }    function uint8ToHex(uint8){
         return ("00" + uint8.toString(16)).slice(-2);
     }
     function updateConfigurableFields(el){
@@ -344,5 +576,6 @@
         });
     }
     </script>
+    </div>
 </body>
 </html>

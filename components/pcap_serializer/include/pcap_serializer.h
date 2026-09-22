@@ -75,4 +75,35 @@ unsigned pcap_serializer_get_size(void);
  */
 bool pcap_serializer_read(unsigned offset, uint8_t *buf, unsigned len);
 
+/** Maximum number of capture files returned by pcap_serializer_list(). */
+#define PCAP_LIST_MAX 32
+
+/**
+ * @brief Information about one stored capture file.
+ */
+typedef struct {
+    char name[32];      /**< file name inside the capture directory, e.g. capture_001.pcap */
+    unsigned size;      /**< file size in bytes */
+} pcap_file_info_t;
+
+/**
+ * @brief Enumerate stored capture files, newest index last.
+ *
+ * @param out caller-owned array
+ * @param max capacity of out
+ * @return number of files written to out
+ */
+unsigned pcap_serializer_list(pcap_file_info_t *out, unsigned max);
+
+/**
+ * @brief Reads bytes from a specific stored capture file.
+ *
+ * @param name file name as returned by pcap_serializer_list()
+ * @param offset absolute offset into that file
+ * @param buf destination buffer
+ * @param len number of bytes to read
+ * @return true on success
+ */
+bool pcap_serializer_read_file(const char *name, unsigned offset, uint8_t *buf, unsigned len);
+
 #endif /* PCAP_SERIALIZER_H */

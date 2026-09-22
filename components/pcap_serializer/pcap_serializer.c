@@ -19,6 +19,7 @@
 #include "esp_spiffs.h"
 #include <dirent.h>
 #include <sys/stat.h>
+#include <stdlib.h>
 
 static const char *TAG = "pcap_serializer";
 
@@ -252,6 +253,85 @@ bool pcap_serializer_read(unsigned offset, uint8_t *buf, unsigned len)
     } else if (read_file != NULL) {
         /* Establish a write position before the next append. */
         fseek(read_file, 0, SEEK_END);
+    }
+    unlock_serializer();
+    return ok;
+}
+
+static int compare_file_info(const void *a, const void *b)
+{
+    return strcmp(((const pcap_file_info_t *)a)->name, ((const pcap_file_info_t *)b)->name);
+}
+
+unsigned pcap_serializer_list(pcap_file_info_t *out, unsigned max)
+{
+    if (out == NULL || max == 0) return 0;
+    if (!ensure_mutex()) return 0;
+
+    lock_serializer();
+    if (!mount_spiffs()) {
+        unlock_serializer();
+        return 0;
+    }
+
+    unsigned count = 0;
+    DIR *dir = opendir(PCAP_DIR_PATH);
+    if (dir != NULL) {
+        struct dirent *ent;
+        while ((ent = readdir(dir)) != NULL && count < max) {
+            unsigned idx = 0;
+            /* only accept the capture_NNN.pcap naming used by this component */
+            if (sscanf(ent->d_name, "capture_%u.pcap", &idx) != 1) continue;
+
+            char full[64];
+            snprintf(full, sizeof(full), PCAP_FILE_PATH_FMT, idx);
+            struct stat st;
+            if (stat(full, &st) != 0) continue;
+
+            strncpy(out[count].name, ent->d_name, sizeof(out[count].name) - 1);
+            out[count].name[sizeof(out[count].name) - 1] = '\0';
+            out[count].size = (unsigned)st.st_size;
+            count++;
+        }
+        closedir(dir);
+    }
+    unlock_serializer();
+
+    /* deterministic order: capture_001, capture_002, ... */
+    qsort(out, count, sizeof(pcap_file_info_t), compare_file_info);
+    return count;
+}
+
+bool pcap_serializer_read_file(const char *name, unsigned offset, uint8_t *buf, unsigned len)
+{
+    if (name == NULL || (buf == NULL && len != 0)) return false;
+    if (strstr(name, "..") != NULL || strchr(name, '/') != NULL) return false;
+    if (!ensure_mutex()) return false;
+
+    lock_serializer();
+    if (!mount_spiffs()) {
+        unlock_serializer();
+        return false;
+    }
+
+    char full[80];
+    snprintf(full, sizeof(full), PCAP_BASE_PATH "/%s", name);
+
+    bool ok = false;
+    struct stat st;
+    if (stat(full, &st) == 0 && (unsigned)st.st_size >= offset &&
+        len <= (unsigned)st.st_size - offset) {
+        if (len == 0) {
+            ok = true;
+        } else {
+            FILE *file = fopen(full, "rb");
+            if (file != NULL) {
+                if (fseek(file, offset, SEEK_SET) == 0) {
+                    ok = fread(buf, 1, len, file) == len;
+                }
+                fclose(file);
+            }
+        }
     }
     unlock_serializer();
     return ok;
