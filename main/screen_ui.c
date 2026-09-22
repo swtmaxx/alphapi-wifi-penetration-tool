@@ -31,7 +31,7 @@
 #define HEADER_H         14
 #define CONTENT_Y        18
 #define LINE_H           12
-#define FOOTER_Y         118
+#define FOOTER_Y         111
 #define AP_VISIBLE        7
 #define RESULT_BYTES_PAGE 24
 
@@ -74,9 +74,9 @@ static ui_state_t ui;
 static const char *UI_TAG = "screen_ui";
 
 static const char *main_menu_items[] = {
-    "状态", "网络扫描", "攻击配置", "攻击结果", "抓包文件"
+    "状态", "网络扫描", "攻击结果", "抓包文件"
 };
-#define MAIN_MENU_COUNT 5
+#define MAIN_MENU_COUNT 4
 
 static const char *attack_type_names[] = {
     "被动", "握手", "PMKID", "拒绝服务"
@@ -433,17 +433,8 @@ static void handle_enter(void)
             switch (ui.menu_index) {
                 case 0: ui.screen = SCREEN_STATUS; break;
                 case 1: ui.screen = SCREEN_AP_LIST; request_scan(); break;
-                case 2:
-                    if (has_ap_records()) {
-                        ui.screen = SCREEN_ATTACK_TYPE;
-                        ui.menu_index = ui.atk_type;
-                    } else {
-                        ui.screen = SCREEN_AP_LIST;
-                        request_scan();
-                    }
-                    break;
-                case 3: ui.screen = SCREEN_RESULT; ui.result_page = 0; break;
-                case 4: ui.screen = SCREEN_CAPTURE; break;
+                case 2: ui.screen = SCREEN_RESULT; ui.result_page = 0; break;
+                case 3: ui.screen = SCREEN_CAPTURE; break;
                 default: break;
             }
             break;

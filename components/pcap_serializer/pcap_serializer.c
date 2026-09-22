@@ -17,6 +17,8 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_spiffs.h"
+#include <dirent.h>
+#include <sys/stat.h>
 
 static const char *TAG = "pcap_serializer";
 
@@ -26,10 +28,15 @@ static const char *TAG = "pcap_serializer";
 
 #define PCAP_BASE_PATH   "/pcap"
 #define PCAP_FILE_PATH   PCAP_BASE_PATH "/capture.pcap"
+#define PCAP_FILE_PATH_FMT PCAP_BASE_PATH "/capture_%03u.pcap"
+#define PCAP_DIR_PATH    PCAP_BASE_PATH
+#define PCAP_FILE_MASK   8
 #define WRITE_BUF_SIZE   4096
 
 static unsigned pcap_size = 0;
 static FILE *pcap_file = NULL;
+static char pcap_cur_path[64] = PCAP_FILE_PATH;
+static unsigned pcap_file_index = 1;
 static uint8_t write_buf[WRITE_BUF_SIZE];
 static unsigned write_buf_used = 0;
 static bool spiffs_mounted = false;
@@ -100,6 +107,25 @@ static void append_bytes(const uint8_t *data, unsigned size)
     }
 }
 
+static void pick_next_capture_path(void)
+{
+    DIR *dir = opendir(PCAP_DIR_PATH);
+    unsigned max_index = 0;
+    if (dir != NULL) {
+        struct dirent *ent;
+        while ((ent = readdir(dir)) != NULL) {
+            unsigned idx = 0;
+            if (sscanf(ent->d_name, "capture_%u.pcap", &idx) == 1) {
+                if (idx > max_index) max_index = idx;
+            }
+        }
+        closedir(dir);
+    }
+    pcap_file_index = max_index + 1;
+    snprintf(pcap_cur_path, sizeof(pcap_cur_path),
+             PCAP_FILE_PATH_FMT, pcap_file_index);
+}
+
 bool pcap_serializer_init(void)
 {
     if (!ensure_mutex()) return false;
@@ -116,9 +142,12 @@ bool pcap_serializer_init(void)
         pcap_file = NULL;
     }
 
-    pcap_file = fopen(PCAP_FILE_PATH, "w+b");
+    mkdir(PCAP_DIR_PATH, 0777);
+    pick_next_capture_path();
+
+    pcap_file = fopen(pcap_cur_path, "w+b");
     if (pcap_file == NULL) {
-        ESP_LOGE(TAG, "Failed to open %s", PCAP_FILE_PATH);
+        ESP_LOGE(TAG, "Failed to open %s", pcap_cur_path);
         unlock_serializer();
         return false;
     }
@@ -208,7 +237,7 @@ bool pcap_serializer_read(unsigned offset, uint8_t *buf, unsigned len)
     FILE *read_file = pcap_file;
     bool close_read_file = false;
     if (read_file == NULL) {
-        read_file = fopen(PCAP_FILE_PATH, "rb");
+        read_file = fopen(pcap_cur_path, "rb");
         close_read_file = true;
     } else if (!flush_write_buf()) {
         unlock_serializer();
