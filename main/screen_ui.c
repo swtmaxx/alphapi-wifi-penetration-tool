@@ -28,11 +28,11 @@
 #define RENDER_PERIOD_MS 150
 #define UI_TASK_STACK    7168
 #define UI_TASK_PRIO     3
-#define HEADER_H         14
-#define CONTENT_Y        18
-#define LINE_H           12
-#define FOOTER_Y         111
-#define AP_VISIBLE        7
+#define HEADER_H         16
+#define CONTENT_Y        16
+#define LINE_H           16
+#define FOOTER_Y         112
+#define AP_VISIBLE        6
 #define RESULT_BYTES_PAGE 24
 
 typedef enum {
@@ -134,13 +134,13 @@ static bool copy_records(wifictl_ap_records_t *records)
 static void draw_header(const char *title)
 {
     display_fill_rect(0, 0, DISPLAY_WIDTH, HEADER_H, COLOR_BLUE);
-    display_draw_text_utf8(3, 1, title, COLOR_WHITE, COLOR_BLUE);
+    display_draw_text_utf8(3, 0, title, COLOR_WHITE, COLOR_BLUE);
 }
 
 static void draw_footer(const char *hint)
 {
     display_fill_rect(0, FOOTER_Y, DISPLAY_WIDTH, DISPLAY_HEIGHT - FOOTER_Y, COLOR_DARKGRAY);
-    display_draw_text_utf8(3, FOOTER_Y + 1, hint, COLOR_WHITE, COLOR_DARKGRAY);
+    display_draw_text_utf8(3, FOOTER_Y, hint, COLOR_WHITE, COLOR_DARKGRAY);
 }
 
 static void draw_menu_list(const char *const *items, uint8_t count, uint8_t selected)
@@ -149,8 +149,8 @@ static void draw_menu_list(const char *const *items, uint8_t count, uint8_t sele
     for (uint8_t i = 0; i < count; i++) {
         uint16_t fg = i == selected ? COLOR_BLACK : COLOR_WHITE;
         uint16_t bg = i == selected ? COLOR_YELLOW : COLOR_BLACK;
-        display_fill_rect(1, y - 1, DISPLAY_WIDTH - 2, LINE_H, bg);
-        display_draw_text_utf8(5, y - 1, items[i], fg, bg);
+        display_fill_rect(1, y, DISPLAY_WIDTH - 2, LINE_H, bg);
+        display_draw_text_utf8(5, y, items[i], fg, bg);
         y += LINE_H;
     }
 }
@@ -168,14 +168,14 @@ static void draw_status(void)
     wifictl_ap_records_t records;
 
     display_draw_text_utf8(3, CONTENT_Y, "AlphaPi", COLOR_GREEN, COLOR_BLACK);
-    display_draw_text_utf8(3, CONTENT_Y + 18, "芯片 ESP32-S2", COLOR_WHITE, COLOR_BLACK);
+    display_draw_text_utf8(3, CONTENT_Y + LINE_H, "芯片 ESP32-S2", COLOR_WHITE, COLOR_BLACK);
     if (copy_records(&records)) {
         snprintf(buf, sizeof(buf), "AP 数量 %u", records.count);
-        display_draw_text_utf8(3, CONTENT_Y + 32, buf, COLOR_YELLOW, COLOR_BLACK);
+        display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, buf, COLOR_YELLOW, COLOR_BLACK);
     }
     if (attack_get_status_snapshot(&status)) {
         snprintf(buf, sizeof(buf), "攻击 %s", attack_state_name(status.state));
-        display_draw_text_utf8(3, CONTENT_Y + 46, buf,
+        display_draw_text_utf8(3, CONTENT_Y + 3 * LINE_H, buf,
                                status.state == RUNNING ? COLOR_ORANGE : COLOR_WHITE,
                                COLOR_BLACK);
         attack_free_status_snapshot(&status);
@@ -187,18 +187,18 @@ static void draw_scan_message(void)
 {
     if (ui.scan_state == SCAN_RUNNING || ui.scan_state == SCAN_PENDING) {
         display_draw_text_utf8(3, CONTENT_Y, "正在扫描网络", COLOR_YELLOW, COLOR_BLACK);
-        display_draw_text_utf8(3, CONTENT_Y + 18, "请稍候", COLOR_WHITE, COLOR_BLACK);
+        display_draw_text_utf8(3, CONTENT_Y + LINE_H, "请稍候", COLOR_WHITE, COLOR_BLACK);
         draw_footer("返回=菜单");
         return;
     }
     if (ui.scan_state == SCAN_FAILED) {
         display_draw_text_utf8(3, CONTENT_Y, "扫描失败", COLOR_RED, COLOR_BLACK);
         if (ui.scan_error == ESP_ERR_TIMEOUT) {
-            display_draw_text_utf8(3, CONTENT_Y + 18, "扫描正在进行", COLOR_WHITE, COLOR_BLACK);
+            display_draw_text_utf8(3, CONTENT_Y + LINE_H, "扫描正在进行", COLOR_WHITE, COLOR_BLACK);
         } else if (ui.scan_error == ESP_ERR_INVALID_STATE) {
-            display_draw_text_utf8(3, CONTENT_Y + 18, "攻击中无法扫描", COLOR_WHITE, COLOR_BLACK);
+            display_draw_text_utf8(3, CONTENT_Y + LINE_H, "攻击中无法扫描", COLOR_WHITE, COLOR_BLACK);
         } else {
-            display_draw_text_utf8(3, CONTENT_Y + 18, "请重试", COLOR_WHITE, COLOR_BLACK);
+            display_draw_text_utf8(3, CONTENT_Y + LINE_H, "请重试", COLOR_WHITE, COLOR_BLACK);
         }
     }
 }
@@ -231,8 +231,8 @@ static void draw_ap_list(void)
         if (ssid[0] == '\0') strcpy(ssid, "(隐藏)");
         uint16_t fg = i == ui.ap_index ? COLOR_BLACK : COLOR_WHITE;
         uint16_t bg = i == ui.ap_index ? COLOR_YELLOW : COLOR_BLACK;
-        display_fill_rect(1, y - 1, DISPLAY_WIDTH - 2, LINE_H, bg);
-        display_draw_text_utf8(4, y - 1, ssid, fg, bg);
+        display_fill_rect(1, y, DISPLAY_WIDTH - 2, LINE_H, bg);
+        display_draw_text_utf8(4, y, ssid, fg, bg);
         snprintf(buf, sizeof(buf), "%d %d", record->primary, record->rssi);
         display_draw_text(123, y, buf, fg, bg);
         y += LINE_H;
@@ -270,7 +270,7 @@ static void draw_attack_confirm(void)
     if (copy_records(&records) && ui.ap_index < records.count) record = &records.records[ui.ap_index];
 
     display_draw_text_utf8(3, y, "确认攻击", COLOR_YELLOW, COLOR_BLACK);
-    y += LINE_H + 2;
+    y += LINE_H;
     if (record) {
         char ssid[33];
         memcpy(ssid, record->ssid, sizeof(ssid));
@@ -279,10 +279,10 @@ static void draw_attack_confirm(void)
     } else {
         display_draw_text_utf8(3, y, "未选择目标", COLOR_RED, COLOR_BLACK);
     }
-    y += LINE_H + 2;
+    y += LINE_H;
     snprintf(buf, sizeof(buf), "类型 %s", attack_type_names[ui.atk_type]);
     display_draw_text_utf8(3, y, buf, COLOR_WHITE, COLOR_BLACK);
-    y += LINE_H + 2;
+    y += LINE_H;
     snprintf(buf, sizeof(buf), "超时 %s", timeout_names[ui.atk_timeout_index]);
     display_draw_text_utf8(3, y, buf, COLOR_WHITE, COLOR_BLACK);
     draw_footer("确定=开始 返回=取消");
@@ -292,7 +292,7 @@ static void draw_hex_page(const uint8_t *data, unsigned size)
 {
     char line[24];
     unsigned offset = (unsigned)ui.result_page * RESULT_BYTES_PAGE;
-    for (unsigned row = 0; row < 4 && offset < size; row++) {
+    for (unsigned row = 0; row < 3 && offset < size; row++) {
         unsigned count = size - offset;
         if (count > 6) count = 6;
         unsigned pos = 0;
@@ -300,7 +300,7 @@ static void draw_hex_page(const uint8_t *data, unsigned size)
             pos += (unsigned)snprintf(&line[pos], sizeof(line) - pos, "%02X ", data[offset + i]);
         }
         line[pos] = '\0';
-        display_draw_text(3, CONTENT_Y + 30 + (int16_t)row * LINE_H, line, COLOR_CYAN, COLOR_BLACK);
+        display_draw_text(3, CONTENT_Y + 3 * LINE_H + (int16_t)row * LINE_H, line, COLOR_CYAN, COLOR_BLACK);
         offset += count;
     }
 }
@@ -316,10 +316,10 @@ static void draw_attack_status(void)
                            COLOR_BLACK);
     snprintf(buf, sizeof(buf), "类型 %s",
              status.type < ATTACK_TYPE_COUNT ? attack_type_names[status.type] : "-");
-    display_draw_text_utf8(3, CONTENT_Y + LINE_H + 2, buf, COLOR_WHITE, COLOR_BLACK);
+    display_draw_text_utf8(3, CONTENT_Y + LINE_H, buf, COLOR_WHITE, COLOR_BLACK);
     if (status.content != NULL && status.content_size > 0) {
         snprintf(buf, sizeof(buf), "数据 %u 字节", status.content_size);
-        display_draw_text_utf8(3, CONTENT_Y + 2 * (LINE_H + 2), buf, COLOR_CYAN, COLOR_BLACK);
+        display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, buf, COLOR_CYAN, COLOR_BLACK);
     }
     attack_free_status_snapshot(&status);
     draw_footer("返回=停止");
@@ -332,16 +332,16 @@ static void draw_result(void)
     if (!attack_get_status_snapshot(&status)) return;
     display_draw_text_utf8(3, CONTENT_Y, "攻击结果", COLOR_YELLOW, COLOR_BLACK);
     snprintf(buf, sizeof(buf), "状态 %s", attack_state_name(status.state));
-    display_draw_text_utf8(3, CONTENT_Y + LINE_H + 2, buf, COLOR_WHITE, COLOR_BLACK);
+    display_draw_text_utf8(3, CONTENT_Y + LINE_H, buf, COLOR_WHITE, COLOR_BLACK);
     if (status.content != NULL && status.content_size > 0) {
         unsigned pages = (status.content_size + RESULT_BYTES_PAGE - 1) / RESULT_BYTES_PAGE;
         if (pages == 0) pages = 1;
         if (ui.result_page >= pages) ui.result_page = pages - 1;
         snprintf(buf, sizeof(buf), "第 %u/%u 页", ui.result_page + 1, pages);
-        display_draw_text_utf8(3, CONTENT_Y + 2 * (LINE_H + 2), buf, COLOR_WHITE, COLOR_BLACK);
+        display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, buf, COLOR_WHITE, COLOR_BLACK);
         draw_hex_page((const uint8_t *)status.content, status.content_size);
     } else {
-        display_draw_text_utf8(3, CONTENT_Y + 2 * (LINE_H + 2), "暂无结果", COLOR_GRAY, COLOR_BLACK);
+        display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, "暂无结果", COLOR_GRAY, COLOR_BLACK);
     }
     attack_free_status_snapshot(&status);
     draw_footer("上下=翻页 返回=菜单");
@@ -353,11 +353,11 @@ static void draw_capture(void)
     hccapx_t *hccapx = hccapx_serializer_get();
     display_draw_text_utf8(3, CONTENT_Y, "抓包文件", COLOR_YELLOW, COLOR_BLACK);
     snprintf(buf, sizeof(buf), "PCAP %u 字节", pcap_serializer_get_size());
-    display_draw_text_utf8(3, CONTENT_Y + LINE_H + 2, buf, COLOR_WHITE, COLOR_BLACK);
-    display_draw_text_utf8(3, CONTENT_Y + 2 * (LINE_H + 2),
+    display_draw_text_utf8(3, CONTENT_Y + LINE_H, buf, COLOR_WHITE, COLOR_BLACK);
+    display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H,
                            hccapx ? "HCCAPX 可用" : "HCCAPX 暂无",
                            hccapx ? COLOR_GREEN : COLOR_GRAY, COLOR_BLACK);
-    display_draw_text_utf8(3, CONTENT_Y + 3 * (LINE_H + 2), "文件保存在 Flash", COLOR_GRAY, COLOR_BLACK);
+    display_draw_text_utf8(3, CONTENT_Y + 3 * LINE_H, "文件保存在 Flash", COLOR_GRAY, COLOR_BLACK);
     draw_footer("返回=菜单");
 }
 

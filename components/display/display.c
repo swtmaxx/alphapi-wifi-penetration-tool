@@ -30,6 +30,7 @@
 #define TFT_SPI_HOST   SPI3_HOST
 #define SPI_FREQ_HZ    (31 * 1000 * 1000)
 #define FRAMEBUF_PIXEL (DISPLAY_WIDTH * DISPLAY_HEIGHT)
+#define FONT_CELL_HEIGHT 16
 #define FRAMEBUF_BYTES (FRAMEBUF_PIXEL * 2)
 
 /* ST7789 commands */
@@ -234,6 +235,9 @@ void display_draw_char(int16_t x, int16_t y, char ch, uint16_t fg, uint16_t bg)
 {
     if (!display_ready) return;
     if (ch < 0x20 || ch >= 0x7F) ch = ' ';
+    /* Vertically centre the 7px glyph inside the 16px CJK line cell. */
+    y += (FONT_CELL_HEIGHT - FONT5X7_HEIGHT) / 2;
+
 
     const uint8_t *glyph = font5x7[ch - 0x20];
     for (int8_t col = 0; col < FONT5X7_WIDTH; col++) {
