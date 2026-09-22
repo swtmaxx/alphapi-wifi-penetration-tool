@@ -30,6 +30,9 @@ static const char *TAG = "pcap_serializer";
 #define PCAP_BASE_PATH   "/pcap"
 #define PCAP_FILE_PATH   PCAP_BASE_PATH "/capture.pcap"
 #define PCAP_FILE_PATH_FMT PCAP_BASE_PATH "/capture_%03u.pcap"
+/* Indexed name with an SSID tag, e.g. capture_007_MyWiFi.pcap */
+#define PCAP_FILE_PATH_SSID_FMT PCAP_BASE_PATH "/capture_%03u%s.pcap"
+#define PCAP_SSID_TAG_MAX 24
 #define PCAP_DIR_PATH    PCAP_BASE_PATH
 #define PCAP_FILE_MASK   8
 #define WRITE_BUF_SIZE   4096
@@ -38,6 +41,7 @@ static unsigned pcap_size = 0;
 static FILE *pcap_file = NULL;
 static char pcap_cur_path[64] = PCAP_FILE_PATH;
 static unsigned pcap_file_index = 1;
+static char pcap_ssid_tag[PCAP_SSID_TAG_MAX + 1] = "";
 static uint8_t write_buf[WRITE_BUF_SIZE];
 static unsigned write_buf_used = 0;
 static bool spiffs_mounted = false;
@@ -108,6 +112,35 @@ static void append_bytes(const uint8_t *data, unsigned size)
     }
 }
 
+/**
+ * @brief Build a filesystem-safe tag from an SSID.
+ *
+ * Keeps ASCII letters, digits, hyphen and underscore; every other byte
+ * (including UTF-8 continuation bytes) becomes '_' so the name stays valid
+ * on FAT/SPIFFS and remains readable in a download list.
+ */
+static void build_ssid_tag(const uint8_t *ssid, unsigned len)
+{
+    unsigned out = 0;
+    if (ssid != NULL) {
+        for (unsigned i = 0; i < len && out < PCAP_SSID_TAG_MAX; i++) {
+            uint8_t c = ssid[i];
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                (c >= '0' && c <= '9') || c == '-' || c == '_') {
+                pcap_ssid_tag[out++] = (char) c;
+            } else if (c >= 0x80 || c == ' ') {
+                /* Collapse runs of non-ASCII/space into a single '_'. */
+                if (out > 0 && pcap_ssid_tag[out - 1] != '_') {
+                    pcap_ssid_tag[out++] = '_';
+                }
+            }
+        }
+        /* Trim a trailing separator left by the collapse rule. */
+        while (out > 0 && pcap_ssid_tag[out - 1] == '_') out--;
+    }
+    pcap_ssid_tag[out] = '\0';
+}
+
 static void pick_next_capture_path(void)
 {
     DIR *dir = opendir(PCAP_DIR_PATH);
@@ -116,19 +149,29 @@ static void pick_next_capture_path(void)
         struct dirent *ent;
         while ((ent = readdir(dir)) != NULL) {
             unsigned idx = 0;
-            if (sscanf(ent->d_name, "capture_%u.pcap", &idx) == 1) {
+            /* Accept both capture_NNN.pcap and capture_NNN_tag.pcap. */
+            if (sscanf(ent->d_name, "capture_%u", &idx) == 1 ||
+                sscanf(ent->d_name, "capture_%u_", &idx) == 1) {
                 if (idx > max_index) max_index = idx;
             }
         }
         closedir(dir);
     }
     pcap_file_index = max_index + 1;
-    snprintf(pcap_cur_path, sizeof(pcap_cur_path),
-             PCAP_FILE_PATH_FMT, pcap_file_index);
+
+    if (pcap_ssid_tag[0] != '\0') {
+        snprintf(pcap_cur_path, sizeof(pcap_cur_path),
+                 PCAP_FILE_PATH_SSID_FMT, pcap_file_index, pcap_ssid_tag);
+    } else {
+        snprintf(pcap_cur_path, sizeof(pcap_cur_path),
+                 PCAP_FILE_PATH_FMT, pcap_file_index);
+    }
 }
 
-bool pcap_serializer_init(void)
+bool pcap_serializer_init(const uint8_t *ssid, unsigned ssid_len)
 {
+    build_ssid_tag(ssid, ssid_len);
+
     if (!ensure_mutex()) return false;
     lock_serializer();
 
@@ -280,11 +323,11 @@ unsigned pcap_serializer_list(pcap_file_info_t *out, unsigned max)
         struct dirent *ent;
         while ((ent = readdir(dir)) != NULL && count < max) {
             unsigned idx = 0;
-            /* only accept the capture_NNN.pcap naming used by this component */
-            if (sscanf(ent->d_name, "capture_%u.pcap", &idx) != 1) continue;
+            /* Accept capture_NNN.pcap and capture_NNN_tag.pcap. */
+            if (sscanf(ent->d_name, "capture_%u", &idx) != 1) continue;
 
-            char full[64];
-            snprintf(full, sizeof(full), PCAP_FILE_PATH_FMT, idx);
+            char full[96];
+            snprintf(full, sizeof(full), PCAP_BASE_PATH "/%s", ent->d_name);
             struct stat st;
             if (stat(full, &st) != 0) continue;
 

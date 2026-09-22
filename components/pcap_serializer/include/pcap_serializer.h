@@ -41,7 +41,12 @@ typedef struct {
  * Has always to be called before pcap_serializer_append_frame().
  * @return true if the capture file is ready for appending.
  */
-bool pcap_serializer_init(void);
+/**
+ * @param ssid SSID of the target AP, used as an optional file-name tag so the
+ *             capture can be identified later. May be NULL.
+ * @param ssid_len number of valid bytes in ssid
+ */
+bool pcap_serializer_init(const uint8_t *ssid, unsigned ssid_len);
 
 /**
  * @brief Appends a frame. Data is buffered in RAM and flushed to Flash when full.
