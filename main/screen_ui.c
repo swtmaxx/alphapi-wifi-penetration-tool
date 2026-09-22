@@ -53,8 +53,7 @@ typedef enum {
     SCAN_PENDING,
     SCAN_RUNNING,
     SCAN_READY,
-    SCAN_FAILED,
-    SCAN_COUNTING_CLIENTS
+    SCAN_FAILED
 } scan_state_t;
 
 typedef struct {
@@ -75,9 +74,9 @@ static ui_state_t ui;
 static const char *UI_TAG = "screen_ui";
 
 static const char *main_menu_items[] = {
-    "状态", "网络扫描", "探测客户端", "攻击结果", "抓包文件"
+    "状态", "网络扫描", "攻击结果", "抓包文件"
 };
-#define MAIN_MENU_COUNT 5
+#define MAIN_MENU_COUNT 4
 
 static const char *attack_type_names[] = {
     "被动", "握手", "PMKID", "拒绝服务"
@@ -192,12 +191,7 @@ static void draw_scan_message(void)
         draw_footer("返回=菜单");
         return;
     }
-    if (ui.scan_state == SCAN_COUNTING_CLIENTS) {
-        display_draw_text_utf8(3, CONTENT_Y, "正在探测客户端", COLOR_YELLOW, COLOR_BLACK);
-        display_draw_text_utf8(3, CONTENT_Y + LINE_H, "热点会暂时断开", COLOR_WHITE, COLOR_BLACK);
-        draw_footer("返回=菜单");
-        return;
-    }
+
     if (ui.scan_state == SCAN_FAILED) {
         display_draw_text_utf8(3, CONTENT_Y, "扫描失败", COLOR_RED, COLOR_BLACK);
         if (ui.scan_error == ESP_ERR_TIMEOUT) {
@@ -218,7 +212,7 @@ static void draw_ap_list(void)
     uint8_t shown = 0;
 
     if (ui.scan_state == SCAN_RUNNING || ui.scan_state == SCAN_PENDING ||
-        ui.scan_state == SCAN_FAILED || ui.scan_state == SCAN_COUNTING_CLIENTS) {
+        ui.scan_state == SCAN_FAILED) {
         draw_scan_message();
         return;
     }
@@ -240,11 +234,9 @@ static void draw_ap_list(void)
         uint16_t bg = i == ui.ap_index ? COLOR_YELLOW : COLOR_BLACK;
         display_fill_rect(1, y, DISPLAY_WIDTH - 2, LINE_H, bg);
 
-        /* Reserve the right side for "ch/clients" so the SSID cannot push it off. */
-        char right[16];
-        snprintf(right, sizeof(right), "%u/%u", record->primary,
-                 wifictl_get_client_count(record->bssid));
-        int16_t right_w = display_text_width(right, 1);
+        /* Right column shows "channel rssi", e.g. "6 -45". */
+        snprintf(buf, sizeof(buf), "%d %d", record->primary, record->rssi);
+        int16_t right_w = display_text_width(buf, 1);
         int16_t right_x = DISPLAY_WIDTH - right_w - 3;
         if (right_x < 4) right_x = 4;
 
@@ -269,10 +261,10 @@ static void draw_ap_list(void)
         clipped[out] = '\0';
 
         display_draw_text_utf8(4, y, clipped, fg, bg);
-        display_draw_text(right_x, y, right, fg, bg);
+        display_draw_text(right_x, y, buf, fg, bg);
         y += LINE_H;
     }
-    draw_footer("信道/客户端 确定=攻击");
+    draw_footer("信道/信号 确定=攻击");
 }
 
 static void draw_attack_type(void)
@@ -461,62 +453,7 @@ static void run_pending_scan(void)
     ui.dirty = true;
 }
 
-static bool pending_client_count = false;
 
-static void request_client_count(void)
-{
-    if (!has_ap_records()) {
-        /* Nothing to probe yet: run a scan first, the probe is queued after it. */
-        ui.screen = SCREEN_AP_LIST;
-        request_scan();
-        pending_client_count = true;
-        return;
-    }
-
-    attack_status_t status;
-    if (attack_get_status_snapshot(&status)) {
-        bool running = status.state == RUNNING;
-        attack_free_status_snapshot(&status);
-        if (running) {
-            ui.screen = SCREEN_AP_LIST;
-            ui.scan_state = SCAN_FAILED;
-            ui.scan_error = ESP_ERR_INVALID_STATE;
-            ui.dirty = true;
-            return;
-        }
-    }
-
-    ui.screen = SCREEN_AP_LIST;
-    pending_client_count = true;
-}
-
-static void run_pending_client_count(void)
-{
-    if (!pending_client_count) return;
-    /* Wait until any pending scan finished. */
-    if (ui.scan_state == SCAN_PENDING || ui.scan_state == SCAN_RUNNING) return;
-
-    pending_client_count = false;
-    ui.scan_state = SCAN_COUNTING_CLIENTS;
-    ui.dirty = true;
-    render();
-
-    wifictl_start_client_counting();
-
-    /* The probe owns the radio until it restarts the management AP, so the UI
-       waits for it instead of leaving it running behind a stale screen. */
-    uint32_t waited_ms = 0;
-    const uint32_t max_wait_ms = 60000;   /* 13 channels x ~2 s plus margin */
-    while (wifictl_client_counting_active() && waited_ms < max_wait_ms) {
-        vTaskDelay(pdMS_TO_TICKS(200));
-        waited_ms += 200;
-        /* keep the header/footer info fresh without redrawing the whole list */
-        if ((waited_ms % 1000) == 0) ui.dirty = true;
-    }
-
-    ui.scan_state = SCAN_READY;
-    ui.dirty = true;
-}
 
 static void handle_enter(void)
 {
@@ -525,9 +462,8 @@ static void handle_enter(void)
             switch (ui.menu_index) {
                 case 0: ui.screen = SCREEN_STATUS; break;
                 case 1: ui.screen = SCREEN_AP_LIST; request_scan(); break;
-                case 2: request_client_count(); break;
-                case 3: ui.screen = SCREEN_RESULT; ui.result_page = 0; break;
-                case 4: ui.screen = SCREEN_CAPTURE; break;
+                case 2: ui.screen = SCREEN_RESULT; ui.result_page = 0; break;
+                case 3: ui.screen = SCREEN_CAPTURE; break;
                 default: break;
             }
             break;
@@ -668,7 +604,6 @@ static void ui_task(void *arg)
             ui.dirty = false;
         }
         run_pending_scan();
-        run_pending_client_count();
         if (ui.screen == SCREEN_ATTACK_STATUS || ui.screen == SCREEN_CAPTURE) {
             ui.dirty = true;
         }
