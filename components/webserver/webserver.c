@@ -374,6 +374,9 @@ void webserver_run(){
     ESP_LOGD(TAG, "Running webserver");
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    /* The default cap (8) is below the number of endpoints registered here,
+       and exceeding it makes httpd_register_uri_handler() fail. */
+    config.max_uri_handlers = 16;
     httpd_handle_t server = NULL;
 
     ESP_ERROR_CHECK(httpd_start(&server, &config));
