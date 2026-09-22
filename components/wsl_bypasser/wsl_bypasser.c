@@ -55,7 +55,7 @@ int __wrap_ieee80211_raw_frame_sanity_check(int32_t arg, int32_t arg2, int32_t a
 }
 
 void wsl_bypasser_send_raw_frame(const uint8_t *frame_buffer, int size){
-    esp_err_t ret = esp_wifi_80211_tx(WIFI_IF_AP, frame_buffer, size, true);
+    esp_err_t ret = esp_wifi_80211_tx(WIFI_IF_AP, frame_buffer, size, false);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Raw 802.11 transmit failed: %s", esp_err_to_name(ret));
     }

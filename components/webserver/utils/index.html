@@ -172,6 +172,7 @@
 </style>
 </head>
 <body onLoad="getStatus()">
+    <div class="wrap">
     <h1>ESP32 Wi-Fi 安全测试工具</h1>
     <section id="errors"></section>
     <section id="loading">正在加载，请稍候</section>
@@ -311,7 +312,11 @@
     }
     function showAttackConfig(){
         document.getElementById("ready").style.display = "block";
+        /* The capture list lives outside #ready but hideAllSections() hides
+           every <section>, so it has to be re-shown explicitly. */
+        document.getElementById("captures").style.display = "block";
         refreshAps();
+        loadCaptures();
     }
     function showResult(status, attack_type, attack_content_size, attack_content){
         hideAllSections();
@@ -454,14 +459,22 @@
     }
     function resultHandshake(attack_content, attack_content_size){
         document.getElementById("result-content").innerHTML = "";
+        var links_div = document.createElement("div");
         var pcap_link = document.createElement("a");
         pcap_link.setAttribute("href", "capture.pcap");
-        pcap_link.text = "下载 PCAP 文件";
+        pcap_link.setAttribute("download", "capture.pcap");
+        pcap_link.textContent = "下载当前 PCAP 文件";
         var hccapx_link = document.createElement("a");
         hccapx_link.setAttribute("href", "capture.hccapx");
-        hccapx_link.text = "下载 HCCAPX 文件";
-        document.getElementById("result-content").innerHTML += "<p>" + pcap_link.outerHTML + "</p>";
-        document.getElementById("result-content").innerHTML += "<p>" + hccapx_link.outerHTML + "</p>";
+        hccapx_link.setAttribute("download", "capture.hccapx");
+        hccapx_link.textContent = "下载 HCCAPX 文件";
+        links_div.appendChild(pcap_link);
+        links_div.appendChild(document.createElement("br"));
+        links_div.appendChild(hccapx_link);
+        document.getElementById("result-content").appendChild(links_div);
+
+        /* Refresh the file list so older captures are reachable too. */
+        loadCaptures();
         var handshakes = "";
         for(let i = 0; i < attack_content_size; i = i + 1) {
             handshakes += uint8ToHex(attack_content[i]);
