@@ -3,4 +3,6 @@ idf_component_register(
     INCLUDE_DIRS "include"
     PRIV_REQUIRES esp_event esp_wifi
 )
-target_link_libraries(${COMPONENT_LIB} -Wl,-zmuldefs)
+# Redirect the Wi-Fi library's frame sanity check to __wrap_... in wsl_bypasser.c.
+# --wrap does not depend on link order, unlike -zmuldefs.
+target_link_libraries(${COMPONENT_LIB} -Wl,--wrap=ieee80211_raw_frame_sanity_check)

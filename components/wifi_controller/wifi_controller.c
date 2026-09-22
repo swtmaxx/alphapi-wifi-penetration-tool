@@ -114,7 +114,10 @@ void wifictl_sta_connect_to_ap(const wifi_ap_record_t *ap_record, const char pas
 }
 
 void wifictl_sta_disconnect(){
-    ESP_ERROR_CHECK(esp_wifi_disconnect());
+    esp_err_t ret = esp_wifi_disconnect();
+    if (ret != ESP_OK && ret != ESP_ERR_WIFI_NOT_CONNECT) {
+        ESP_LOGW(TAG, "Failed to disconnect STA: %s", esp_err_to_name(ret));
+    }
 }
 
 void wifictl_set_ap_mac(const uint8_t *mac_ap){

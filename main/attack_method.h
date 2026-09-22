@@ -15,9 +15,10 @@
  * @brief Starts periodic deauthentication frame broadcast
  * 
  * @param ap_record target AP record which BSSID will be used in deauthentication frame 
- * @param period_sec period of broadcast in seconds 
+ * @param period_ms period of broadcast in milliseconds (use a small value such as 100
+ *        so frames repeat often enough to keep clients disconnected)
  */
-void attack_method_broadcast(const wifi_ap_record_t *ap_record, unsigned period_sec);
+void attack_method_broadcast(const wifi_ap_record_t *ap_record, unsigned period_ms);
 
 /**
  * @brief Stop periodic deauthentication frame broadcast

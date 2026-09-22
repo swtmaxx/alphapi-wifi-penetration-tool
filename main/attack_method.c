@@ -23,7 +23,7 @@
 #include "wsl_bypasser.h"
 
 static const char *TAG = "main:attack_method";
-static esp_timer_handle_t deauth_timer_handle;
+static esp_timer_handle_t deauth_timer_handle = NULL;
 
 /**
  * @brief Callback for periodic deauthentication frame timer
@@ -39,10 +39,14 @@ static void timer_send_deauth_frame(void *arg){
 /**
  * @details Starts periodic timer for sending deauthentication frame via timer_send_deauth_frame().
  */
-void attack_method_broadcast(const wifi_ap_record_t *ap_record, unsigned period_sec){
+void attack_method_broadcast(const wifi_ap_record_t *ap_record, unsigned period_ms){
     if (ap_record == NULL || ap_record->primary == 0) {
         ESP_LOGE(TAG, "Cannot start broadcast deauth without a valid AP record");
         return;
+    }
+    if (period_ms == 0) {
+        ESP_LOGW(TAG, "Invalid broadcast period, using 100 ms");
+        period_ms = 100;
     }
     /* The management AP normally pins the radio to its own channel. */
     wifictl_set_channel(ap_record->primary);
@@ -50,13 +54,28 @@ void attack_method_broadcast(const wifi_ap_record_t *ap_record, unsigned period_
         .callback = &timer_send_deauth_frame,
         .arg = (void *) ap_record
     };
-    ESP_ERROR_CHECK(esp_timer_create(&deauth_timer_args, &deauth_timer_handle));
-    ESP_ERROR_CHECK(esp_timer_start_periodic(deauth_timer_handle, period_sec * 1000000));
+    esp_err_t err = esp_timer_create(&deauth_timer_args, &deauth_timer_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to create deauth timer: %s", esp_err_to_name(err));
+        return;
+    }
+    err = esp_timer_start_periodic(deauth_timer_handle, (uint64_t) period_ms * 1000ULL);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start deauth timer: %s", esp_err_to_name(err));
+        esp_timer_delete(deauth_timer_handle);
+    }
 }
 
 void attack_method_broadcast_stop(){
-    ESP_ERROR_CHECK(esp_timer_stop(deauth_timer_handle));
+    if (deauth_timer_handle == NULL) return;
+    if (esp_timer_is_active(deauth_timer_handle)) {
+        esp_err_t err = esp_timer_stop(deauth_timer_handle);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to stop deauth timer: %s", esp_err_to_name(err));
+        }
+    }
     esp_timer_delete(deauth_timer_handle);
+    deauth_timer_handle = NULL;
 }
 
 /**

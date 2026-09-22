@@ -15,10 +15,10 @@
 
 #include "display.h"
 #include "attack.h"
-#include "../components/hccapx_serializer/include/hccapx_serializer.h"
-#include "../components/pcap_serializer/include/pcap_serializer.h"
-#include "../components/webserver/include/webserver.h"
-#include "../components/wifi_controller/include/wifi_controller.h"
+#include "hccapx_serializer.h"
+#include "pcap_serializer.h"
+#include "webserver.h"
+#include "wifi_controller.h"
 
 #define KEY_ENTER 13
 #define KEY_BACK  12

@@ -22,8 +22,8 @@
 
 #include "attack.h"
 #include "screen_ui.h"
-#include "../components/wifi_controller/include/wifi_controller.h"
-#include "../components/webserver/include/webserver.h"
+#include "wifi_controller.h"
+#include "webserver.h"
 
 void app_main(void)
 {

@@ -15,6 +15,7 @@
 
 #include "attack_pmkid.h"
 
+#include <stdlib.h>
 #include <string.h>
 #define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
 #include "esp_log.h"
@@ -46,15 +47,29 @@ static void pmkid_exit_condition_handler(void *args, esp_event_base_t event_base
     attack_pmkid_stop();
     
     pmkid_item_t *pmkid_item_head = *(pmkid_item_t **) event_data;
-    // count how many PMKIDs in the list
-    pmkid_item_t *pmkid_item = pmkid_item_head;
-    unsigned pmkid_item_count = 1; 
-    while((pmkid_item = pmkid_item->next) != NULL){
+    if (pmkid_item_head == NULL) {
+        ESP_LOGW(TAG, "PMKID event without any item");
+        return;
+    }
+
+    /* Count nodes first; the list is built with head insertion. */
+    unsigned pmkid_item_count = 0;
+    for (pmkid_item_t *item = pmkid_item_head; item != NULL; item = item->next) {
         pmkid_item_count++;
     }
 
     // MAC_STA + MAC_AP + SSID size + SSID + PMKID * count
     char *content = attack_alloc_result_content(6 + 6 + 1 + strlen((char *) ap_record->ssid) + (pmkid_item_count * 16));
+    if (content == NULL) {
+        /* free the list so the items do not leak when allocation failed */
+        pmkid_item_t *item = pmkid_item_head;
+        while (item != NULL) {
+            pmkid_item_t *next = item->next;
+            free(item);
+            item = next;
+        }
+        return;
+    }
     wifictl_get_sta_mac((uint8_t *) content);
     content += 6;
     memcpy(content, ap_record->bssid, 6);
@@ -64,15 +79,15 @@ static void pmkid_exit_condition_handler(void *args, esp_event_base_t event_base
     strcpy(content, (char *) ap_record->ssid);
     content += strlen((char *) ap_record->ssid);
 
-    // copy PMKIDs into continuous memory into "content" in status 
-    pmkid_item = pmkid_item_head;
-    do {
-        pmkid_item_head = pmkid_item;
-        memcpy(content, pmkid_item_head, 16);
+    // copy PMKIDs into continuous memory into "content" in status, freeing as we go
+    pmkid_item_t *item = pmkid_item_head;
+    while (item != NULL) {
+        pmkid_item_t *next = item->next;
+        memcpy(content, item->pmkid, 16);
         content += 16;
-        pmkid_item = pmkid_item->next;
-        free(pmkid_item_head);
-    } while(pmkid_item != NULL);
+        free(item);
+        item = next;
+    }
 
     ESP_LOGD(TAG, "PMKID attack finished");
 }

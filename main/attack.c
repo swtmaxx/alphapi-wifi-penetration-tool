@@ -31,7 +31,11 @@
 #include "wifi_controller.h"
 
 static const char* TAG = "attack";
+/* Upper bound for status result content to keep RAM use predictable. */
+#define ATTACK_STATUS_CONTENT_MAX (64 * 1024)
 static attack_status_t attack_status = { .state = READY, .type = -1, .content_size = 0, .content = NULL };
+/* Own copy of the target AP so a later scan cannot invalidate the pointer mid-attack. */
+static wifi_ap_record_t active_ap_record;
 static esp_timer_handle_t attack_timeout_handle;
 static SemaphoreHandle_t attack_status_mutex;
 
@@ -95,11 +99,17 @@ void attack_update_status(attack_state_t state) {
 }
 
 void attack_append_status_content(uint8_t *buffer, unsigned size){
-    if(size == 0){
-        ESP_LOGE(TAG, "Size can't be 0 if you want to reallocate");
+    if(size == 0 || buffer == NULL){
+        ESP_LOGE(TAG, "Invalid arguments for appending status content");
         return;
     }
     status_lock();
+    if (attack_status.content_size + size > ATTACK_STATUS_CONTENT_MAX) {
+        status_unlock();
+        ESP_LOGW(TAG, "Status content limit reached (%u bytes); dropping new data",
+                 ATTACK_STATUS_CONTENT_MAX);
+        return;
+    }
     char *reallocated_content = realloc(attack_status.content, attack_status.content_size + size);
     if(reallocated_content == NULL){
         status_unlock();
@@ -117,9 +127,18 @@ char *attack_alloc_result_content(unsigned size) {
     status_lock();
     free(attack_status.content);
     attack_status.content = NULL;
-    attack_status.content_size = size;
-    attack_status.content = (char *) malloc(size);
-    char *content = attack_status.content;
+    attack_status.content_size = 0;
+
+    char *content = NULL;
+    if (size > 0) {
+        content = (char *) malloc(size);
+        if (content == NULL) {
+            ESP_LOGE(TAG, "Failed to allocate %u bytes for result content", size);
+        } else {
+            attack_status.content = content;
+            attack_status.content_size = size;
+        }
+    }
     status_unlock();
     return content;
 }
@@ -183,13 +202,17 @@ static void attack_timeout(void* arg){
 static void attack_request_handler(void *args, esp_event_base_t event_base, int32_t event_id, void *event_data) {
     ESP_LOGI(TAG, "Starting attack...");
     attack_request_t *attack_request = (attack_request_t *) event_data;
-    attack_config_t attack_config = { .type = attack_request->type, .method = attack_request->method, .timeout = attack_request->timeout };
-    attack_config.ap_record = wifictl_get_ap_record(attack_request->ap_record_id);
-
-    if(attack_config.ap_record == NULL){
-        ESP_LOGE(TAG, "NPE: No attack_config.ap_record!");
+    const wifi_ap_record_t *selected = wifictl_get_ap_record(attack_request->ap_record_id);
+    if(selected == NULL){
+        ESP_LOGE(TAG, "No AP record for id %u", attack_request->ap_record_id);
         return;
     }
+
+    /* Snapshot the record: scanning overwrites the shared AP array. */
+    memcpy(&active_ap_record, selected, sizeof(active_ap_record));
+
+    attack_config_t attack_config = { .type = attack_request->type, .method = attack_request->method, .timeout = attack_request->timeout };
+    attack_config.ap_record = &active_ap_record;
 
     status_lock();
     if (attack_status.state == RUNNING) {

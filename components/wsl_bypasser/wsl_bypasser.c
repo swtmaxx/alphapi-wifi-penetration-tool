@@ -39,12 +39,18 @@ static const uint8_t deauth_frame_default[] = {
 };
 
 /**
- * @brief Decomplied function that overrides original one at compilation time.
- * 
- * @attention This function is not meant to be called!
- * @see Project with original idea/implementation https://github.com/GANESH-ICMC/esp32-deauther
+ * @brief Linker wrap override for ieee80211_raw_frame_sanity_check.
+ *
+ * Paired with -Wl,--wrap=ieee80211_raw_frame_sanity_check in CMakeLists.txt the
+ * linker redirects every call made inside the Wi-Fi library to this function.
+ * Returning 0 unconditionally lets raw deauthentication frames pass the frame
+ * validity check. Unlike the previous -zmuldefs same-name override this does
+ * not depend on link order.
+ *
+ * @attention Not meant to be called directly; used by the linker only.
+ * @see Original idea https://github.com/GANESH-ICMC/esp32-deauther
  */
-int ieee80211_raw_frame_sanity_check(int32_t arg, int32_t arg2, int32_t arg3){
+int __wrap_ieee80211_raw_frame_sanity_check(int32_t arg, int32_t arg2, int32_t arg3){
     return 0;
 }
 
