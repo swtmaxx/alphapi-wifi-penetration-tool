@@ -1,15 +1,12 @@
 /**
  * @file pcap_serializer.h
- * @author risinek (risinek@gmail.com)
- * @date 2021-04-05
- * @copyright Copyright (c) 2021
- * 
- * @brief Provides interface to generate PCAP formatted binary from raw frame bytes 
+ * @brief PCAP serializer that streams captured frames to SPIFFS on Flash.
  */
 #ifndef PCAP_SERIALIZER_H
 #define PCAP_SERIALIZER_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 /**
  * @brief PCAP global header
@@ -29,7 +26,7 @@ typedef struct {
 /**
  * @brief PCAP record header
  * 
- * @see Ref: https://gitlab.com/wireshark/wireshark/-/wikis/Development/LibpcapFileFormat
+ * @see Ref: https://gitlab.com/wireshark/wireshark/-/wikis/Development/LibpcapFileFormat#global-header
  */
 typedef struct {
         uint32_t ts_sec;         /* timestamp seconds */
@@ -39,18 +36,16 @@ typedef struct {
 } pcap_record_header_t;
 
 /**
- * @brief Prepares new empty buffer for PCAP formatted binary data. 
- * 
- * Has always to be called before pcap_serializer_append_frame()
- * @return uint8_t* pointer to newly allocated PCAP buffer.
- * @return \c NULL initialisation failed
+ * @brief Mounts SPIFFS, opens the capture file and writes the PCAP global header.
+ *
+ * Has always to be called before pcap_serializer_append_frame().
+ * @return true if the capture file is ready for appending.
  */
-uint8_t *pcap_serializer_init();
+bool pcap_serializer_init(void);
 
 /**
- * @brief Appends new frame to existing PCAP buffer.
+ * @brief Appends a frame. Data is buffered in RAM and flushed to Flash when full.
  * 
- * Expects pcap_serializer_append_frame() was already called.
  * @param buffer frame buffer that should be appended to PCAP
  * @param size size of frame buffer
  * @param ts_usec timestamp of captured frame in microseconds
@@ -58,25 +53,26 @@ uint8_t *pcap_serializer_init();
 void pcap_serializer_append_frame(const uint8_t *buffer, unsigned size, unsigned ts_usec);
 
 /**
- * @brief Frees PCAP buffer and resets all values.
- * 
- * After calling this function, you have to call pcap_serializer_init() to append new frames again.
+ * @brief Flushes remaining bytes and closes the capture file.
  * 
  */
-void pcap_serializer_deinit();
+void pcap_serializer_deinit(void);
 
 /**
- * @brief Returns size of PCAP buffer in bytes
+ * @brief Total size of the stored PCAP file in bytes.
  * 
  * @return unsigned
  */
-unsigned pcap_serializer_get_size();
+unsigned pcap_serializer_get_size(void);
 
 /**
- * @brief Return pointer to PCAP buffer
+ * @brief Reads len bytes of the stored PCAP file starting at offset.
  * 
- * @return uint8_t* 
+ * @param offset absolute offset into the stored file
+ * @param buf destination buffer
+ * @param len number of bytes to read
+ * @return true on success
  */
-uint8_t *pcap_serializer_get_buffer();
+bool pcap_serializer_read(unsigned offset, uint8_t *buf, unsigned len);
 
-#endif
+#endif /* PCAP_SERIALIZER_H */

@@ -14,24 +14,36 @@
  */
 
 #include <stdio.h>
-
-#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
-#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "driver/gpio.h"
 #include "esp_event.h"
+#include "nvs_flash.h"
 
 #include "attack.h"
-#include "wifi_controller.h"
-#include "webserver.h"
-
-static const char* TAG = "main";
+#include "screen_ui.h"
+#include "../components/wifi_controller/include/wifi_controller.h"
+#include "../components/webserver/include/webserver.h"
 
 void app_main(void)
 {
-    ESP_LOGD(TAG, "app_main started");
+    gpio_config_t bl = {
+        .pin_bit_mask = 1ULL << 33,
+        .mode = GPIO_MODE_OUTPUT,
+    };
+    gpio_config(&bl);
+    gpio_set_level(33, 1);
+
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     wifictl_mgmt_ap_start();
     attack_init();
     webserver_run();
+    screen_ui_init();
 }
-
-

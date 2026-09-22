@@ -40,6 +40,12 @@ static void timer_send_deauth_frame(void *arg){
  * @details Starts periodic timer for sending deauthentication frame via timer_send_deauth_frame().
  */
 void attack_method_broadcast(const wifi_ap_record_t *ap_record, unsigned period_sec){
+    if (ap_record == NULL || ap_record->primary == 0) {
+        ESP_LOGE(TAG, "Cannot start broadcast deauth without a valid AP record");
+        return;
+    }
+    /* The management AP normally pins the radio to its own channel. */
+    wifictl_set_channel(ap_record->primary);
     const esp_timer_create_args_t deauth_timer_args = {
         .callback = &timer_send_deauth_frame,
         .arg = (void *) ap_record

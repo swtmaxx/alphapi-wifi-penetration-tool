@@ -140,5 +140,10 @@ void wifictl_set_channel(uint8_t channel){
         ESP_LOGE(TAG,"Channel out of range. Expected value from <1,13> but got %u", channel);
         return;
     }
-    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    esp_err_t ret = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to set Wi-Fi channel %u: %s", channel, esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "Wi-Fi channel set to %u", channel);
+    }
 }

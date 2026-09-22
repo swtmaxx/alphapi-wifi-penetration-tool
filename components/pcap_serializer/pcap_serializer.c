@@ -1,50 +1,128 @@
 /**
  * @file pcap_serializer.c
- * @author risinek (risinek@gmail.com)
- * @date 2021-04-05
- * @copyright Copyright (c) 2021
- * 
- * @brief Implementation of PCAP serializer
+ * @brief PCAP serializer that streams captured frames to SPIFFS on Flash.
  *
- * @date Update 2023-05-07
- * @note Updated by Zheng Lin Lei
- * @note Github: https://github.com/ZhengLinLei
+ * Frames are accumulated in a small RAM write buffer and flushed to the
+ * capture file whenever it fills, so the WiFi callback never blocks on a
+ * Flash write for every single frame.
  */
 #include "pcap_serializer.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
 #include "esp_log.h"
 #include "esp_err.h"
+#include "esp_spiffs.h"
 
 static const char *TAG = "pcap_serializer";
 
-
-/**
- * @brief Constanst according to reference
- * 
- * @see Ref: https://gitlab.com/wireshark/wireshark/-/wikis/Development/LibpcapFileFormat#global-header
- */
-//@{
 #define SNAPLEN 65535
 #define PCAP_MAGIC_NUMBER 0xa1b2c3d4
-//@}
-
-/**
- * @brief Constanst according to reference
- * 
- * @see Ref: http://www.tcpdump.org/linktypes.html (LINKTYPE_IEEE802_11)
- */
 #define LINKTYPE_IEEE802_11 105
 
-static unsigned pcap_size = 0;
-static uint8_t *pcap_buffer = NULL;
+#define PCAP_BASE_PATH   "/pcap"
+#define PCAP_FILE_PATH   PCAP_BASE_PATH "/capture.pcap"
+#define WRITE_BUF_SIZE   4096
 
-uint8_t *pcap_serializer_init(){
-    // Make sure memory from previous attack is freed
-    free(pcap_buffer);
-    // Ref: https://gitlab.com/wireshark/wireshark/-/wikis/Development/LibpcapFileFormat#global-header
+static unsigned pcap_size = 0;
+static FILE *pcap_file = NULL;
+static uint8_t write_buf[WRITE_BUF_SIZE];
+static unsigned write_buf_used = 0;
+static bool spiffs_mounted = false;
+static SemaphoreHandle_t pcap_mutex = NULL;
+
+static bool ensure_mutex(void)
+{
+    if (pcap_mutex == NULL) pcap_mutex = xSemaphoreCreateMutex();
+    return pcap_mutex != NULL;
+}
+
+static void lock_serializer(void)
+{
+    xSemaphoreTake(pcap_mutex, portMAX_DELAY);
+}
+
+static void unlock_serializer(void)
+{
+    xSemaphoreGive(pcap_mutex);
+}
+
+static bool mount_spiffs(void)
+{
+    if (spiffs_mounted) return true;
+
+    esp_vfs_spiffs_conf_t conf = {
+        .base_path = PCAP_BASE_PATH,
+        .partition_label = NULL,
+        .max_files = 2,
+        .format_if_mount_failed = true,
+    };
+    esp_err_t ret = esp_vfs_spiffs_register(&conf);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to mount SPIFFS (%s)", esp_err_to_name(ret));
+        return false;
+    }
+    spiffs_mounted = true;
+    return true;
+}
+
+static bool flush_write_buf(void)
+{
+    if (pcap_file == NULL || write_buf_used == 0) return true;
+    size_t written = fwrite(write_buf, 1, write_buf_used, pcap_file);
+    if (written != write_buf_used) {
+        ESP_LOGE(TAG, "Failed to write PCAP buffer (%u/%u bytes)",
+                 (unsigned) written, write_buf_used);
+        return false;
+    }
+    write_buf_used = 0;
+    if (fflush(pcap_file) != 0) {
+        ESP_LOGE(TAG, "Failed to flush PCAP file");
+        return false;
+    }
+    return true;
+}
+
+static void append_bytes(const uint8_t *data, unsigned size)
+{
+    while (size > 0) {
+        unsigned space = WRITE_BUF_SIZE - write_buf_used;
+        unsigned copy = size > space ? space : size;
+        memcpy(&write_buf[write_buf_used], data, copy);
+        write_buf_used += copy;
+        data += copy;
+        size -= copy;
+        if (write_buf_used == WRITE_BUF_SIZE) flush_write_buf();
+    }
+}
+
+bool pcap_serializer_init(void)
+{
+    if (!ensure_mutex()) return false;
+    lock_serializer();
+
+    if (!mount_spiffs()) {
+        unlock_serializer();
+        return false;
+    }
+
+    if (pcap_file != NULL) {
+        flush_write_buf();
+        fclose(pcap_file);
+        pcap_file = NULL;
+    }
+
+    pcap_file = fopen(PCAP_FILE_PATH, "w+b");
+    if (pcap_file == NULL) {
+        ESP_LOGE(TAG, "Failed to open %s", PCAP_FILE_PATH);
+        unlock_serializer();
+        return false;
+    }
+
     pcap_global_header_t pcap_global_header = {
         .magic_number = PCAP_MAGIC_NUMBER,
         .version_major = 2,
@@ -54,52 +132,98 @@ uint8_t *pcap_serializer_init(){
         .snaplen = SNAPLEN,
         .network = LINKTYPE_IEEE802_11
     };
-    pcap_buffer = (uint8_t *)malloc(sizeof(pcap_global_header_t));
+
+    write_buf_used = 0;
+    pcap_size = 0;
+    append_bytes((uint8_t *)&pcap_global_header, sizeof(pcap_global_header_t));
     pcap_size = sizeof(pcap_global_header_t);
-    memcpy(pcap_buffer, &pcap_global_header, sizeof(pcap_global_header_t));
-    return pcap_buffer;
+    unlock_serializer();
+    return true;
 }
 
-void pcap_serializer_append_frame(const uint8_t *buffer, unsigned size, unsigned ts_usec){
-    if(size == 0){
-        ESP_LOGD(TAG, "Frame size is 0. Not appending anything.");
+void pcap_serializer_append_frame(const uint8_t *buffer, unsigned size, unsigned ts_usec)
+{
+    if (size == 0) return;
+    if (buffer == NULL || !ensure_mutex()) return;
+
+    lock_serializer();
+    if (pcap_file == NULL) {
+        unlock_serializer();
         return;
     }
-    // Ref: https://gitlab.com/wireshark/wireshark/-/wikis/Development/LibpcapFileFormat#record-packet-header
+
+    if (size > SNAPLEN) size = SNAPLEN;
+
     pcap_record_header_t pcap_record_header = {
         .ts_sec = ts_usec / 1000000,
         .ts_usec = ts_usec % 1000000,
         .incl_len = size,
         .orig_len = size,
     };
-    // Ref: https://gitlab.com/wireshark/wireshark/-/wikis/Development/LibpcapFileFormat#record-packet-header
-    // Stored packet/frame cannot be larger than SNAPLEN
-    if(size > SNAPLEN){
-        size = SNAPLEN;
-        pcap_record_header.incl_len = SNAPLEN;
-    }
 
-    uint8_t *reallocated_pcap_buffer = realloc(pcap_buffer, pcap_size + sizeof(pcap_record_header_t) + size);
-    if(reallocated_pcap_buffer == NULL){
-        ESP_LOGE(TAG, "Error reallocating PCAP buffer! PCAP buffer may not be complete.");
-        return;
-    }
-    memcpy(&reallocated_pcap_buffer[pcap_size], &pcap_record_header, sizeof(pcap_record_header_t));
-    memcpy(&reallocated_pcap_buffer[pcap_size + sizeof(pcap_record_header_t)], buffer, size);
-    pcap_buffer = reallocated_pcap_buffer;
+    append_bytes((uint8_t *)&pcap_record_header, sizeof(pcap_record_header_t));
+    append_bytes(buffer, size);
     pcap_size += sizeof(pcap_record_header_t) + size;
+    unlock_serializer();
 }
 
-void pcap_serializer_deinit(){
-    free(pcap_buffer);
-    pcap_buffer = NULL;
-    pcap_size = 0;
+void pcap_serializer_deinit(void)
+{
+    if (!ensure_mutex()) return;
+    lock_serializer();
+    flush_write_buf();
+    if (pcap_file != NULL) {
+        fclose(pcap_file);
+        pcap_file = NULL;
+    }
+    write_buf_used = 0;
+    /* Keep the mounted partition and size available for a later download. */
+    unlock_serializer();
 }
 
-unsigned pcap_serializer_get_size(){
-    return pcap_size;
+unsigned pcap_serializer_get_size(void)
+{
+    if (!ensure_mutex()) return 0;
+    lock_serializer();
+    unsigned size = pcap_size;
+    unlock_serializer();
+    return size;
 }
 
-uint8_t *pcap_serializer_get_buffer(){
-    return pcap_buffer;
+bool pcap_serializer_read(unsigned offset, uint8_t *buf, unsigned len)
+{
+    if ((buf == NULL && len != 0) || !ensure_mutex()) return false;
+
+    lock_serializer();
+    if (offset > pcap_size || len > pcap_size - offset) {
+        unlock_serializer();
+        return false;
+    }
+    if (len == 0) {
+        unlock_serializer();
+        return true;
+    }
+
+    bool ok = false;
+    FILE *read_file = pcap_file;
+    bool close_read_file = false;
+    if (read_file == NULL) {
+        read_file = fopen(PCAP_FILE_PATH, "rb");
+        close_read_file = true;
+    } else if (!flush_write_buf()) {
+        unlock_serializer();
+        return false;
+    }
+
+    if (read_file != NULL && fseek(read_file, offset, SEEK_SET) == 0) {
+        ok = fread(buf, 1, len, read_file) == len;
+    }
+    if (close_read_file) {
+        if (read_file != NULL) fclose(read_file);
+    } else if (read_file != NULL) {
+        /* Establish a write position before the next append. */
+        fseek(read_file, 0, SEEK_END);
+    }
+    unlock_serializer();
+    return ok;
 }

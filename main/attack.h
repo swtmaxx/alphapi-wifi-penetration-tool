@@ -13,6 +13,7 @@
 #ifndef ATTACK_H
 #define ATTACK_H
 
+#include <stdbool.h>
 #include "esp_wifi_types.h"
 
 /**
@@ -68,6 +69,19 @@ typedef struct {
  * @return const attack_status_t*  pointer to the status strucutre
  */
 const attack_status_t *attack_get_status();
+
+/**
+ * @brief Copy the current attack status and result content.
+ *
+ * The returned content belongs to the snapshot and must be released with
+ * attack_free_status_snapshot().
+ */
+bool attack_get_status_snapshot(attack_status_t *snapshot);
+
+/**
+ * @brief Release content allocated by attack_get_status_snapshot().
+ */
+void attack_free_status_snapshot(attack_status_t *snapshot);
 
 /**
  * @brief Function to update current status of attack.

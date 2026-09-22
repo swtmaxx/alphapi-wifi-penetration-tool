@@ -87,22 +87,32 @@ static httpd_uri_t uri_reset_head = {
  * @{
  */
 static esp_err_t uri_ap_list_get_handler(httpd_req_t *req) {
-    wifictl_scan_nearby_aps();
+    esp_err_t scan_ret = wifictl_scan_nearby_aps();
+    if (scan_ret != ESP_OK) {
+        const char *message = (scan_ret == ESP_ERR_TIMEOUT)
+            ? "扫描正在进行，请稍候"
+            : "扫描失败，请确认 Wi-Fi 状态后重试";
+        /* ESP-IDF 5.0 does not define a 503 helper; retain the failure
+           semantics with the closest standard server-error response. */
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, message);
+    }
 
-    const wifictl_ap_records_t *ap_records;
-    ap_records = wifictl_get_ap_records();
+    wifictl_ap_records_t ap_records;
+    if (!wifictl_copy_ap_records(&ap_records)) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "无法读取扫描结果");
+    }
 
     // 33 SSID + 6 BSSID + 1 RSSI
     char resp_chunk[40];
 
     ESP_ERROR_CHECK(httpd_resp_set_type(req, HTTPD_TYPE_OCTET));
-    for(unsigned i = 0; i < ap_records->count; i++){
-        memcpy(resp_chunk, ap_records->records[i].ssid, 33);
-        memcpy(&resp_chunk[33], ap_records->records[i].bssid, 6);
-        memcpy(&resp_chunk[39], &ap_records->records[i].rssi, 1);
+    for (unsigned i = 0; i < ap_records.count; i++) {
+        memcpy(resp_chunk, ap_records.records[i].ssid, 33);
+        memcpy(&resp_chunk[33], ap_records.records[i].bssid, 6);
+        memcpy(&resp_chunk[39], &ap_records.records[i].rssi, 1);
         ESP_ERROR_CHECK(httpd_resp_send_chunk(req, resp_chunk, 40));
     }
-    return httpd_resp_send_chunk(req, resp_chunk, 0);
+    return httpd_resp_send_chunk(req, NULL, 0);
 }
 
 static httpd_uri_t uri_ap_list_get = {
@@ -147,17 +157,25 @@ static httpd_uri_t uri_run_attack_post = {
  */
 static esp_err_t uri_status_get_handler(httpd_req_t *req) {
     ESP_LOGD(TAG, "Fetching attack status...");
-    const attack_status_t *attack_status;
-    attack_status = attack_get_status();
-
-    ESP_ERROR_CHECK(httpd_resp_set_type(req, HTTPD_TYPE_OCTET));
-    // first send attack result header
-    ESP_ERROR_CHECK(httpd_resp_send_chunk(req, (char *) attack_status, 4));
-    // send attack result content
-    if(((attack_status->state == FINISHED) || (attack_status->state == TIMEOUT)) && (attack_status->content_size > 0)){
-        ESP_ERROR_CHECK(httpd_resp_send_chunk(req, attack_status->content, attack_status->content_size));
+    attack_status_t attack_status;
+    if (!attack_get_status_snapshot(&attack_status)) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "status unavailable");
     }
-    return httpd_resp_send_chunk(req, NULL, 0);
+
+    esp_err_t res = httpd_resp_set_type(req, HTTPD_TYPE_OCTET);
+    if (res != ESP_OK) {
+        attack_free_status_snapshot(&attack_status);
+        return res;
+    }
+    // first send attack result header
+    res = httpd_resp_send_chunk(req, (char *) &attack_status, 4);
+    // send attack result content
+    if(res == ESP_OK && ((attack_status.state == FINISHED) || (attack_status.state == TIMEOUT)) && (attack_status.content_size > 0)){
+        res = httpd_resp_send_chunk(req, attack_status.content, attack_status.content_size);
+    }
+    if (res == ESP_OK) res = httpd_resp_send_chunk(req, NULL, 0);
+    attack_free_status_snapshot(&attack_status);
+    return res;
 }
 
 static httpd_uri_t uri_status_get = {
@@ -180,8 +198,24 @@ static httpd_uri_t uri_status_get = {
  */
 static esp_err_t uri_capture_pcap_get_handler(httpd_req_t *req){
     ESP_LOGD(TAG, "Providing PCAP file...");
-    ESP_ERROR_CHECK(httpd_resp_set_type(req, HTTPD_TYPE_OCTET));
-    return httpd_resp_send(req, (char *) pcap_serializer_get_buffer(), pcap_serializer_get_size());
+    httpd_resp_set_type(req, HTTPD_TYPE_OCTET);
+
+    unsigned total = pcap_serializer_get_size();
+    uint8_t chunk[2048];
+    unsigned offset = 0;
+    esp_err_t res = ESP_OK;
+    while (offset < total) {
+        unsigned len = (total - offset) > sizeof(chunk) ? sizeof(chunk) : (total - offset);
+        if (!pcap_serializer_read(offset, chunk, len)) {
+            res = ESP_FAIL;
+            break;
+        }
+        res = httpd_resp_send_chunk(req, (const char *)chunk, len);
+        if (res != ESP_OK) break;
+        offset += len;
+    }
+    if (res == ESP_OK) res = httpd_resp_send_chunk(req, NULL, 0);
+    return res;
 }
 
 static httpd_uri_t uri_capture_pcap_get = {

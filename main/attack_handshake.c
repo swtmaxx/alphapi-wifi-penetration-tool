@@ -55,7 +55,9 @@ void attack_handshake_start(attack_config_t *attack_config){
     ESP_LOGI(TAG, "Starting handshake attack...");
     method = attack_config->method;
     ap_record = attack_config->ap_record;
-    pcap_serializer_init();
+    if (!pcap_serializer_init()) {
+        ESP_LOGE(TAG, "PCAP capture could not be initialized");
+    }
     hccapx_serializer_init(ap_record->ssid, strlen((char *)ap_record->ssid));
     wifictl_sniffer_filter_frame_types(true, false, false);
     wifictl_sniffer_start(ap_record->primary);
@@ -97,6 +99,7 @@ void attack_handshake_stop(){
     wifictl_sniffer_stop();
     frame_analyzer_capture_stop();
     ESP_ERROR_CHECK(esp_event_handler_unregister(ESP_EVENT_ANY_BASE, ESP_EVENT_ANY_ID, &eapolkey_frame_handler));
+    pcap_serializer_deinit();
     ap_record = NULL;
     method = -1;
     ESP_LOGD(TAG, "Handshake attack stopped");

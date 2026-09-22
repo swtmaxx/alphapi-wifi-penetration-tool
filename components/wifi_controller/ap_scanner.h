@@ -9,6 +9,8 @@
 #ifndef AP_SCANNER_H
 #define AP_SCANNER_H
 
+#include <stdbool.h>
+#include "esp_err.h"
 #include "esp_wifi_types.h"
 
 /**
@@ -24,7 +26,7 @@ typedef struct {
  * @brief Switches ESP into scanning mode and stores result.
  * 
  */
-void wifictl_scan_nearby_aps();
+esp_err_t wifictl_scan_nearby_aps(void);
 
 /**
  * @brief Returns current list of scanned APs.
@@ -32,6 +34,13 @@ void wifictl_scan_nearby_aps();
  * @return const wifictl_ap_records_t* 
  */
 const wifictl_ap_records_t *wifictl_get_ap_records();
+
+/**
+ * @brief Copies the latest AP records into caller-owned storage.
+ *
+ * @return true when the snapshot was copied successfully.
+ */
+bool wifictl_copy_ap_records(wifictl_ap_records_t *out);
 
 /**
  * @brief Returns AP record on given index
