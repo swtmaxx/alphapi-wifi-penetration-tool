@@ -95,46 +95,52 @@ eapol_key_packet_t *parse_eapol_key_packet(eapol_packet_t *eapol_packet){
  * @return pmkid_item_t* 
  */
 static pmkid_item_t *parse_pmkid_from_key_data(uint8_t *key_data, const uint16_t length){
+    if (key_data == NULL || length < sizeof(key_data_field_t)) return NULL;
+
     uint8_t *key_data_index = key_data;
     uint8_t *key_data_max_index = key_data + length;
 
     pmkid_item_t *pmkid_item_head = NULL;
-    key_data_field_t *key_data_field;
-    do{
-        key_data_field = (key_data_field_t *) key_data_index;
+
+    while (key_data_index + sizeof(key_data_field_t) <= key_data_max_index) {
+        key_data_field_t *key_data_field = (key_data_field_t *) key_data_index;
 
         ESP_LOGV(TAG, "EAPOL-Key -> Key-Data -> type=%x; length=%x; oui=%x; data_type=%x",
-                    key_data_field->type, 
-                    key_data_field->length, 
+                    key_data_field->type,
+                    key_data_field->length,
                     key_data_field->oui,
                     key_data_field->data_type);
-        
-        if(key_data_field->type != KEY_DATA_TYPE){
-            ESP_LOGD(TAG, "Wrong type %x (expected %x)", key_data_field->type, KEY_DATA_TYPE);
-            continue;
+
+        /* The KDE layout is: type(1) length(1) oui+data_type(4) data(length).
+           Guard against a zero/short length so the walk always advances. */
+        unsigned field_len = key_data_field->length;
+        if (field_len < 4 || key_data_index + 1 + field_len > key_data_max_index) {
+            ESP_LOGD(TAG, "Malformed key-data field (len=%u); stop parsing", field_len);
+            break;
         }
 
-        if(ntohl(key_data_field->oui) != KEY_DATA_OUI_IEEE80211){
-            ESP_LOGD(TAG, "Wrong OUI %x (expected %x)", key_data_field->oui, KEY_DATA_OUI_IEEE80211);
-            continue;
+        bool matches = key_data_field->type == KEY_DATA_TYPE &&
+                       ntohl(key_data_field->oui) == KEY_DATA_OUI_IEEE80211 &&
+                       key_data_field->data_type == KEY_DATA_DATA_TYPE_PMKID_KDE;
+
+        if (matches) {
+            if (field_len < 4 + 16) {
+                ESP_LOGD(TAG, "PMKID KDE too short (len=%u)", field_len);
+            } else {
+                pmkid_item_t *item = (pmkid_item_t *) calloc(1, sizeof(pmkid_item_t));
+                if (item != NULL) {
+                    memcpy(item->pmkid, key_data_field->data, 16);
+                    item->next = pmkid_item_head;
+                    pmkid_item_head = item;
+                    ESP_LOGI(TAG, "Found PMKID");
+                } else {
+                    ESP_LOGE(TAG, "Failed to allocate PMKID item");
+                }
+            }
         }
 
-        if(key_data_field->data_type != KEY_DATA_DATA_TYPE_PMKID_KDE){
-            ESP_LOGD(TAG, "Wrong data type %x (expected %x)", key_data_field->data_type, KEY_DATA_DATA_TYPE_PMKID_KDE);
-            continue;
-        }
-
-        ESP_LOGI(TAG, "Found PMKID: ");
-        pmkid_item_t *pmkid_item = (pmkid_item_t *) malloc(sizeof(pmkid_item_t));
-        pmkid_item->next = pmkid_item_head;
-        pmkid_item_head = pmkid_item;
-        for(unsigned i = 0; i < 16; i++){
-            pmkid_item->pmkid[i] = key_data_field->data[i];
-            printf("%02x", pmkid_item->pmkid[i]);
-        }
-        printf("\n");
-
-    } while((key_data_index = key_data_field->data + key_data_field->length - 4 + 1) < key_data_max_index); 
+        key_data_index += 1 + field_len;
+    }
 
     return pmkid_item_head;
 }
