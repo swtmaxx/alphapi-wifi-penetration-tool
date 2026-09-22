@@ -48,8 +48,11 @@ void attack_method_broadcast(const wifi_ap_record_t *ap_record, unsigned period_
         ESP_LOGW(TAG, "Invalid broadcast period, using 100 ms");
         period_ms = 100;
     }
-    /* The management AP normally pins the radio to its own channel. */
-    wifictl_set_channel(ap_record->primary);
+    /* In APSTA mode the management AP owns the channel: esp_wifi_set_channel()
+       alone is overridden by the running AP, so the deauth frames would go out
+       on the management channel instead of the target one. Reconfigure the
+       management AP onto the target channel to actually move the radio. */
+    wifictl_move_mgmt_ap_to_channel(ap_record->primary);
     const esp_timer_create_args_t deauth_timer_args = {
         .callback = &timer_send_deauth_frame,
         .arg = (void *) ap_record

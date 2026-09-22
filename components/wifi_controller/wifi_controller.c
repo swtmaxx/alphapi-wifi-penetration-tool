@@ -138,6 +138,36 @@ void wifictl_get_sta_mac(uint8_t *mac_sta){
     esp_wifi_get_mac(WIFI_IF_STA, mac_sta);
 }
 
+void wifictl_move_mgmt_ap_to_channel(uint8_t channel){
+    if((channel == 0) || (channel > 13)){
+        ESP_LOGE(TAG, "Channel out of range for management AP: %u", channel);
+        return;
+    }
+
+    /* Reconfiguring the AP is what actually moves the radio: in APSTA mode a
+       plain esp_wifi_set_channel() is undone by the running management AP. */
+    wifi_config_t mgmt_wifi_config = {
+        .ap = {
+            .ssid = CONFIG_MGMT_AP_SSID,
+            .ssid_len = strlen(CONFIG_MGMT_AP_SSID),
+            .password = CONFIG_MGMT_AP_PASSWORD,
+            .channel = channel,
+            .max_connection = CONFIG_MGMT_AP_MAX_CONNECTIONS,
+            .authmode = WIFI_AUTH_WPA2_PSK
+        },
+    };
+    esp_err_t ret = esp_wifi_set_config(ESP_IF_WIFI_AP, &mgmt_wifi_config);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to move management AP to channel %u: %s",
+                 channel, esp_err_to_name(ret));
+        return;
+    }
+
+    /* Keep the interface call as well so a non-AP STA path still lands here. */
+    wifictl_set_channel(channel);
+    ESP_LOGI(TAG, "Management AP moved to channel %u", channel);
+}
+
 void wifictl_set_channel(uint8_t channel){
     if((channel == 0) || (channel >  13)){
         ESP_LOGE(TAG,"Channel out of range. Expected value from <1,13> but got %u", channel);

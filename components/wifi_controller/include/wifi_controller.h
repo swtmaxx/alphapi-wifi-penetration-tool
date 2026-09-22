@@ -84,4 +84,15 @@ void wifictl_get_sta_mac(uint8_t *mac_sta);
  * @param channel channel in range 1 - 13
  */
 void wifictl_set_channel(uint8_t channel);
+
+/**
+ * @brief Moves the management AP to the given channel.
+ *
+ * In APSTA mode the running management AP owns the radio channel, so
+ * wifictl_set_channel() alone does not stick. Reconfiguring the AP is what
+ * actually moves the interface onto the target channel.
+ *
+ * @param channel channel in range 1 - 13
+ */
+void wifictl_move_mgmt_ap_to_channel(uint8_t channel);
 #endif
