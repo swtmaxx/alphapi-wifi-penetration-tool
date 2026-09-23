@@ -343,7 +343,7 @@ static void draw_attack_status(void)
             snprintf(buf, sizeof(buf), "发包成功 %lu", (unsigned long) ok);
             display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, buf, COLOR_GREEN, COLOR_BLACK);
         } else {
-            snprintf(buf, sizeof(buf), "成功%lu 失败%lu", (unsigned long) ok, (unsigned long) fail);
+            snprintf(buf, sizeof(buf), "失败%lu 码 %d", (unsigned long) fail, (int) last_err);
             display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, buf, COLOR_RED, COLOR_BLACK);
         }
     } else if (status.content != NULL && status.content_size > 0) {

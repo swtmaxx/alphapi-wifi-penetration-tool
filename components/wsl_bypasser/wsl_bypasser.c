@@ -39,18 +39,18 @@ static const uint8_t deauth_frame_default[] = {
 };
 
 /**
- * @brief Linker wrap override for ieee80211_raw_frame_sanity_check.
+ * @brief Overrides the Wi-Fi stack's frame sanity check at link time.
  *
- * Paired with -Wl,--wrap=ieee80211_raw_frame_sanity_check in CMakeLists.txt the
- * linker redirects every call made inside the Wi-Fi library to this function.
- * Returning 0 unconditionally lets raw deauthentication frames pass the frame
- * validity check. Unlike the previous -zmuldefs same-name override this does
- * not depend on link order.
+ * Paired with -Wl,-zmuldefs in CMakeLists.txt, this same-name definition wins
+ * over the one inside libnet80211 and makes the check always pass, so raw
+ * deauthentication frames can be transmitted. This matches the upstream
+ * ESP32-S2 build exactly, which is known to transmit successfully on this
+ * target.
  *
- * @attention Not meant to be called directly; used by the linker only.
+ * @attention Not meant to be called directly.
  * @see Original idea https://github.com/GANESH-ICMC/esp32-deauther
  */
-int __wrap_ieee80211_raw_frame_sanity_check(int32_t arg, int32_t arg2, int32_t arg3){
+int ieee80211_raw_frame_sanity_check(int32_t arg, int32_t arg2, int32_t arg3){
     return 0;
 }
 
