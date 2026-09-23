@@ -22,6 +22,15 @@
 void wsl_bypasser_send_raw_frame(const uint8_t *frame_buffer, int size);
 
 /**
+ * @brief Report how many raw frames the driver accepted or rejected.
+ *
+ * Useful on-device diagnostics: if fail keeps growing the frames never left
+ * the radio, so a deauth "doing nothing" is a transmit problem, not a target
+ * problem.
+ */
+void wsl_bypasser_get_tx_stats(uint32_t *ok, uint32_t *fail, esp_err_t *last_err);
+
+/**
  * @brief Sends deauthentication frame with forged source AP from given ap_record
  *  
  * This will send deauthentication frame acting as frame from given AP, and destination will be broadcast

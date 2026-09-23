@@ -19,6 +19,7 @@
 #include "pcap_serializer.h"
 #include "webserver.h"
 #include "wifi_controller.h"
+#include "wsl_bypasser.h"
 
 #define KEY_ENTER 13
 #define KEY_BACK  12
@@ -344,7 +345,20 @@ static void draw_attack_status(void)
     snprintf(buf, sizeof(buf), "类型 %s",
              status.type < ATTACK_TYPE_COUNT ? attack_type_names[status.type] : "-");
     display_draw_text_utf8(3, CONTENT_Y + LINE_H, buf, COLOR_WHITE, COLOR_BLACK);
-    if (status.content != NULL && status.content_size > 0) {
+
+    if (status.type == ATTACK_TYPE_DOS) {
+        /* On-device proof that the raw frames are accepted by the driver. */
+        uint32_t ok = 0, fail = 0;
+        esp_err_t last_err = ESP_OK;
+        wsl_bypasser_get_tx_stats(&ok, &fail, &last_err);
+        if (fail == 0) {
+            snprintf(buf, sizeof(buf), "发包成功 %lu", (unsigned long) ok);
+            display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, buf, COLOR_GREEN, COLOR_BLACK);
+        } else {
+            snprintf(buf, sizeof(buf), "成功%lu 失败%lu", (unsigned long) ok, (unsigned long) fail);
+            display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, buf, COLOR_RED, COLOR_BLACK);
+        }
+    } else if (status.content != NULL && status.content_size > 0) {
         snprintf(buf, sizeof(buf), "数据 %u 字节", status.content_size);
         display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, buf, COLOR_CYAN, COLOR_BLACK);
     }

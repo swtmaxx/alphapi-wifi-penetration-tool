@@ -54,9 +54,25 @@ int __wrap_ieee80211_raw_frame_sanity_check(int32_t arg, int32_t arg2, int32_t a
     return 0;
 }
 
+/* Exposed so the screen can show whether raw frames are actually accepted. */
+static uint32_t raw_tx_ok = 0;
+static uint32_t raw_tx_fail = 0;
+static esp_err_t raw_tx_last_err = ESP_OK;
+
+void wsl_bypasser_get_tx_stats(uint32_t *ok, uint32_t *fail, esp_err_t *last_err)
+{
+    if (ok != NULL) *ok = raw_tx_ok;
+    if (fail != NULL) *fail = raw_tx_fail;
+    if (last_err != NULL) *last_err = raw_tx_last_err;
+}
+
 void wsl_bypasser_send_raw_frame(const uint8_t *frame_buffer, int size){
     esp_err_t ret = esp_wifi_80211_tx(WIFI_IF_AP, frame_buffer, size, false);
-    if (ret != ESP_OK) {
+    if (ret == ESP_OK) {
+        raw_tx_ok++;
+    } else {
+        raw_tx_fail++;
+        raw_tx_last_err = ret;
         ESP_LOGW(TAG, "Raw 802.11 transmit failed: %s", esp_err_to_name(ret));
     }
 }
