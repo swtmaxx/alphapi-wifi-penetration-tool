@@ -353,6 +353,67 @@ static httpd_uri_t uri_capture_file_get = {
 //@}
 
 /**
+ * @brief Handlers for \c /pcap-delete endpoint
+ *
+ * Deletes one stored capture by the \c name query parameter.
+ * @param req
+ * @return esp_err_t
+ * @{
+ */
+static esp_err_t uri_pcap_delete_post_handler(httpd_req_t *req) {
+    char query[96];
+    char name[40] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "name", name, sizeof(name)) != ESP_OK) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "缺少文件参数");
+    }
+
+    if (!pcap_serializer_delete(name)) {
+        return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "删除失败或文件不存在");
+    }
+    return httpd_resp_sendstr(req, "OK");
+}
+
+static httpd_uri_t uri_pcap_delete_post = {
+    .uri = "/pcap-delete",
+    .method = HTTP_POST,
+    .handler = uri_pcap_delete_post_handler,
+    .user_ctx = NULL
+};
+//@}
+
+/**
+ * @brief Handlers for \c /pcap-delete-all endpoint
+ *
+ * Removes every stored capture and result file in one request.
+ * @param req
+ * @return esp_err_t
+ * @{
+ */
+static esp_err_t uri_pcap_delete_all_post_handler(httpd_req_t *req) {
+    static pcap_file_info_t files[PCAP_LIST_MAX * 2];
+    unsigned count = pcap_serializer_list(files, PCAP_LIST_MAX);
+    count += pcap_serializer_list_text(files + count, PCAP_LIST_MAX);
+
+    unsigned removed = 0;
+    for (unsigned i = 0; i < count; i++) {
+        if (pcap_serializer_delete(files[i].name)) removed++;
+    }
+
+    char body[48];
+    snprintf(body, sizeof(body), "已删除 %u 个文件", removed);
+    return httpd_resp_sendstr(req, body);
+}
+
+static httpd_uri_t uri_pcap_delete_all_post = {
+    .uri = "/pcap-delete-all",
+    .method = HTTP_POST,
+    .handler = uri_pcap_delete_all_post_handler,
+    .user_ctx = NULL
+};
+//@}
+
+/**
  * @brief Handlers for \c /count-clients endpoint
  *
  * Starts a passive client counting sweep in the background.
@@ -392,5 +453,7 @@ void webserver_run(){
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_capture_hccapx_get));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_pcap_list_get));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_capture_file_get));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_pcap_delete_post));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_pcap_delete_all_post));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_count_clients_post));
 }

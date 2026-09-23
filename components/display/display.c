@@ -329,7 +329,7 @@ void display_draw_text_utf8(int16_t x, int16_t y, const char *s, uint16_t fg, ui
             continue;
         }
 
-        const font_cjk_glyph_t *glyph = font_cjk_find(codepoint);
+        const uint8_t *glyph = font_cjk_find(codepoint);
         if (glyph == NULL) {
             display_draw_char(x, y, '?', fg, bg);
             x += FONT5X7_WIDTH + 1;
@@ -337,13 +337,17 @@ void display_draw_text_utf8(int16_t x, int16_t y, const char *s, uint16_t fg, ui
         }
         display_fill_rect(x, y, 16, 16, bg);
         for (int row = 0; row < 16; row++) {
+            /* Two bytes per row, low byte first; bit `col` is the pixel at
+               column `col`, matching the framebuffer layout. */
+            uint16_t bits = (uint16_t) glyph[row * 2] |
+                            ((uint16_t) glyph[row * 2 + 1] << 8);
+            int16_t py = y + row;
+            if (py < 0 || py >= DISPLAY_HEIGHT) continue;
+            uint16_t *line = &framebuffer[py * DISPLAY_WIDTH];
             for (int col = 0; col < 16; col++) {
-                if (glyph->rows[row] & (1U << col)) {
+                if (bits & (1U << col)) {
                     int16_t px = x + col;
-                    int16_t py = y + row;
-                    if (px >= 0 && px < DISPLAY_WIDTH && py >= 0 && py < DISPLAY_HEIGHT) {
-                        framebuffer[py * DISPLAY_WIDTH + px] = fg;
-                    }
+                    if (px >= 0 && px < DISPLAY_WIDTH) line[px] = fg;
                 }
             }
         }

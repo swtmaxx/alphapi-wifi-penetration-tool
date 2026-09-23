@@ -11,6 +11,7 @@
 #include "freertos/task.h"
 #include "driver/gpio.h"
 #include "esp_err.h"
+#include "esp_log.h"
 #include "sdkconfig.h"
 #include "esp_event.h"
 
@@ -44,7 +45,8 @@ typedef enum {
     SCREEN_ATTACK_TIMEOUT,
     SCREEN_ATTACK_CONFIRM,
     SCREEN_ATTACK_STATUS,
-    SCREEN_CAPTURE
+    SCREEN_CAPTURE,
+    SCREEN_CAPTURE_DELETE
 } screen_id_t;
 
 typedef enum {
@@ -64,6 +66,8 @@ typedef struct {
     uint8_t atk_timeout_index;
     uint8_t atk_timeout_seconds;
     uint8_t capture_index;
+    /* 0 = ask, 1 = delete just this file, 2 = wipe everything */
+    uint8_t capture_delete_choice;
     scan_state_t scan_state;
     esp_err_t scan_error;
     bool dirty;
@@ -346,6 +350,13 @@ static void draw_attack_status(void)
             snprintf(buf, sizeof(buf), "失败%lu 码 %d", (unsigned long) fail, (int) last_err);
             display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, buf, COLOR_RED, COLOR_BLACK);
         }
+    } else if (status.type == ATTACK_TYPE_HANDSHAKE) {
+        /* Live PCAP progress: frames that actually reached the serializer. */
+        unsigned frames = pcap_serializer_get_frame_count();
+        unsigned bytes = pcap_serializer_get_size();
+        snprintf(buf, sizeof(buf), "帧 %u  %u B", frames, bytes);
+        display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, buf,
+                               frames > 0 ? COLOR_GREEN : COLOR_GRAY, COLOR_BLACK);
     } else if (status.content != NULL && status.content_size > 0) {
         snprintf(buf, sizeof(buf), "数据 %u 字节", status.content_size);
         display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, buf, COLOR_CYAN, COLOR_BLACK);
@@ -372,6 +383,9 @@ static void format_size(char *out, size_t out_size, unsigned bytes)
 /* Shared between drawing and navigation so the list is scanned once per redraw. */
 static pcap_file_info_t capture_cache[PCAP_LIST_MAX * 2];
 static unsigned capture_cache_count = 0;
+/* Name captured when the confirmation page opens, so a list refresh cannot
+   change what the user is about to delete. */
+static char capture_delete_target_name[40] = "";
 
 static unsigned capture_cache_refresh(void)
 {
@@ -437,7 +451,38 @@ static void draw_capture(void)
         display_draw_text(right_x, y, right, fg, bg);
         y += LINE_H;
     }
-    draw_footer("上下=选择");
+    draw_footer("确定=删除 返回=菜单");
+}
+
+/**
+ * @brief Draw the delete-confirmation page.
+ *
+ * Two choices: remove the highlighted file only, or wipe the whole directory.
+ */
+static void draw_capture_delete(void)
+{
+    char buf[48];
+    if (capture_cache_count == 0) capture_cache_refresh();
+
+    display_draw_text_utf8(3, CONTENT_Y, "确认删除？", COLOR_RED, COLOR_BLACK);
+
+    if (capture_delete_target_name[0] != '\0') {
+        char name[26];
+        strncpy(name, capture_delete_target_name, sizeof(name) - 1);
+        name[sizeof(name) - 1] = '\0';
+        display_draw_text_utf8(3, CONTENT_Y + LINE_H, name, COLOR_WHITE, COLOR_BLACK);
+    }
+
+    const char *opts[2] = { "删除此文件", "全部删除" };
+    int16_t y = CONTENT_Y + 2 * LINE_H;
+    for (uint8_t i = 0; i < 2; i++) {
+        uint16_t fg = i == ui.capture_delete_choice ? COLOR_BLACK : COLOR_WHITE;
+        uint16_t bg = i == ui.capture_delete_choice ? COLOR_RED : COLOR_BLACK;
+        display_fill_rect(1, y, DISPLAY_WIDTH - 2, LINE_H, bg);
+        display_draw_text_utf8(3, y, opts[i], fg, bg);
+        y += LINE_H;
+    }
+    draw_footer("确定=执行 返回=取消");
 }
 
 static void render(void)
@@ -453,6 +498,7 @@ static void render(void)
         case SCREEN_ATTACK_CONFIRM: draw_header("确认攻击"); draw_attack_confirm(); break;
         case SCREEN_ATTACK_STATUS: draw_header("攻击状态"); draw_attack_status(); break;
         case SCREEN_CAPTURE: draw_header("抓包文件"); draw_capture(); break;
+        case SCREEN_CAPTURE_DELETE: draw_header("删除文件"); draw_capture_delete(); break;
         default: break;
     }
     display_flush();
@@ -513,7 +559,11 @@ static void handle_enter(void)
             switch (ui.menu_index) {
                 case 0: ui.screen = SCREEN_STATUS; break;
                 case 1: ui.screen = SCREEN_AP_LIST; request_scan(); break;
-                case 2: ui.screen = SCREEN_CAPTURE; ui.capture_index = 0; break;
+                case 2:
+                    ui.screen = SCREEN_CAPTURE;
+                    ui.capture_index = 0;
+                    capture_cache_refresh();
+                    break;
                 default: break;
             }
             break;
@@ -523,6 +573,40 @@ static void handle_enter(void)
                 ui.menu_index = ui.atk_type;
             }
             break;
+        case SCREEN_CAPTURE: {
+            /* Ask for confirmation before removing the highlighted file. */
+            if (capture_cache_count == 0) capture_cache_refresh();
+            if (capture_cache_count == 0) break;
+            if (ui.capture_index >= capture_cache_count) {
+                ui.capture_index = capture_cache_count - 1;
+            }
+            strncpy(capture_delete_target_name, capture_cache[ui.capture_index].name,
+                    sizeof(capture_delete_target_name) - 1);
+            capture_delete_target_name[sizeof(capture_delete_target_name) - 1] = '\0';
+            ui.capture_delete_choice = 0;
+            ui.screen = SCREEN_CAPTURE_DELETE;
+            break;
+        }
+        case SCREEN_CAPTURE_DELETE: {
+            bool all = (ui.capture_delete_choice == 1);
+            bool ok;
+            if (all) {
+                unsigned n = 0;
+                for (unsigned i = 0; i < capture_cache_count; i++) {
+                    if (pcap_serializer_delete(capture_cache[i].name)) n++;
+                }
+                ok = n > 0 || capture_cache_count == 0;
+            } else {
+                ok = pcap_serializer_delete(capture_delete_target_name);
+            }
+            ESP_LOGI(UI_TAG, "%s -> %s", all ? "delete all" : capture_delete_target_name,
+                     ok ? "ok" : "failed");
+            capture_delete_target_name[0] = '\0';
+            ui.capture_index = 0;
+            ui.screen = SCREEN_CAPTURE;
+            capture_cache_refresh();
+            break;
+        }
         case SCREEN_STATUS:
             ui.screen = SCREEN_MAIN_MENU;
             ui.menu_index = 0;
@@ -576,6 +660,10 @@ static void handle_back(void)
             ui.screen = SCREEN_MAIN_MENU;
             ui.menu_index = 0;
             break;
+        case SCREEN_CAPTURE_DELETE:
+            capture_delete_target_name[0] = '\0';
+            ui.screen = SCREEN_CAPTURE;
+            break;
         case SCREEN_ATTACK_STATUS:
             /* Stop the attack and go back to the scan list for another run.
                Non-blocking: a full queue while sniffing must not freeze the UI. */
@@ -609,6 +697,9 @@ static void handle_up(void)
             ui.menu_index = (ui.menu_index + TIMEOUT_COUNT - 1) % TIMEOUT_COUNT;
             break;
         case SCREEN_CAPTURE: if (ui.capture_index > 0) ui.capture_index--; break;
+        case SCREEN_CAPTURE_DELETE:
+            ui.capture_delete_choice = (ui.capture_delete_choice + 2 - 1) % 2;
+            break;
         default: break;
     }
 }
@@ -636,6 +727,9 @@ static void handle_down(void)
         case SCREEN_CAPTURE:
             if (capture_cache_count == 0) capture_cache_refresh();
             if (ui.capture_index + 1 < capture_cache_count) ui.capture_index++;
+            break;
+        case SCREEN_CAPTURE_DELETE:
+            ui.capture_delete_choice = (ui.capture_delete_choice + 1) % 2;
             break;
         default: break;
     }

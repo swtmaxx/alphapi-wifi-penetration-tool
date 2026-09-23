@@ -71,6 +71,14 @@ void pcap_serializer_deinit(void);
 unsigned pcap_serializer_get_size(void);
 
 /**
+ * @brief Number of frames appended to the current capture.
+ *
+ * Unlike the attack status byte count this reflects what actually reached the
+ * PCAP serializer, so it is the honest progress indicator during a capture.
+ */
+unsigned pcap_serializer_get_frame_count(void);
+
+/**
  * @brief Reads len bytes of the stored PCAP file starting at offset.
  * 
  * @param offset absolute offset into the stored file
@@ -110,6 +118,14 @@ unsigned pcap_serializer_list(pcap_file_info_t *out, unsigned max);
  * @return true on success
  */
 bool pcap_serializer_read_file(const char *name, unsigned offset, uint8_t *buf, unsigned len);
+
+/**
+ * @brief Delete one stored file from the capture directory.
+ *
+ * @param name file name as returned by pcap_serializer_list()
+ * @return true when the file is gone afterwards
+ */
+bool pcap_serializer_delete(const char *name);
 
 /**
  * @brief Write a small text result next to the captures.

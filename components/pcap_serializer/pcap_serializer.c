@@ -41,6 +41,7 @@ static const char *TAG = "pcap_serializer";
 #define WRITE_BUF_SIZE   4096
 
 static unsigned pcap_size = 0;
+static unsigned pcap_frames = 0;
 static FILE *pcap_file = NULL;
 static char pcap_cur_path[96] = PCAP_FILE_PATH;
 static unsigned pcap_file_index = 1;
@@ -265,6 +266,7 @@ bool pcap_serializer_init(const uint8_t *ssid, unsigned ssid_len)
 
     write_buf_used = 0;
     pcap_size = 0;
+    pcap_frames = 0;
     append_bytes((uint8_t *)&pcap_global_header, sizeof(pcap_global_header_t));
     pcap_size = sizeof(pcap_global_header_t);
     unlock_serializer();
@@ -294,6 +296,7 @@ void pcap_serializer_append_frame(const uint8_t *buffer, unsigned size, unsigned
     append_bytes((uint8_t *)&pcap_record_header, sizeof(pcap_record_header_t));
     append_bytes(buffer, size);
     pcap_size += sizeof(pcap_record_header_t) + size;
+    pcap_frames++;
     unlock_serializer();
 }
 
@@ -318,6 +321,15 @@ unsigned pcap_serializer_get_size(void)
     unsigned size = pcap_size;
     unlock_serializer();
     return size;
+}
+
+unsigned pcap_serializer_get_frame_count(void)
+{
+    if (!ensure_mutex()) return 0;
+    lock_serializer();
+    unsigned frames = pcap_frames;
+    unlock_serializer();
+    return frames;
 }
 
 bool pcap_serializer_read(unsigned offset, uint8_t *buf, unsigned len)
@@ -467,6 +479,42 @@ static void pick_next_text_path(const char *prefix, char *out, size_t out_size)
         snprintf(out, out_size, PCAP_BASE_PATH "/%s_%03u.txt",
                  prefix, max_index + 1);
     }
+}
+
+/**
+ * @brief Delete one stored file from the capture directory.
+ *
+ * @param name file name as returned by pcap_serializer_list(), e.g. "capture_001.pcap"
+ * @return true when the file no longer exists afterwards
+ */
+bool pcap_serializer_delete(const char *name)
+{
+    if (name == NULL || name[0] == '\0') return false;
+    /* Refuse anything that could escape the capture directory. */
+    if (strstr(name, "..") != NULL || strchr(name, '/') != NULL) return false;
+    if (!ensure_mutex()) return false;
+
+    lock_serializer();
+    if (!mount_spiffs()) {
+        unlock_serializer();
+        return false;
+    }
+
+    char full[96];
+    bool ok = false;
+    if (build_full_path(full, sizeof(full), name)) {
+        /* Do not unlink the file currently being written. */
+        if (pcap_file != NULL && strcmp(full, pcap_cur_path) == 0) {
+            ESP_LOGW(TAG, "Refusing to delete the active capture %s", name);
+        } else if (remove(full) == 0) {
+            ok = true;
+            ESP_LOGI(TAG, "Deleted %s", full);
+        } else {
+            ESP_LOGW(TAG, "Failed to delete %s", full);
+        }
+    }
+    unlock_serializer();
+    return ok;
 }
 
 bool pcap_serializer_write_text(const char *prefix, const uint8_t *ssid,
