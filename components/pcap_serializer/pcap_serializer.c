@@ -30,8 +30,11 @@ static const char *TAG = "pcap_serializer";
 #define PCAP_BASE_PATH   "/pcap"
 #define PCAP_FILE_PATH   PCAP_BASE_PATH "/capture.pcap"
 #define PCAP_FILE_PATH_FMT PCAP_BASE_PATH "/capture_%03u.pcap"
-/* Indexed name with an SSID tag, e.g. capture_007_MyWiFi.pcap */
-#define PCAP_FILE_PATH_SSID_FMT PCAP_BASE_PATH "/capture_%03u%s.pcap"
+/* Indexed name with an SSID tag, e.g. capture_007_MyWiFi.pcap.
+ * The separator before %s is required: without it an SSID such as
+ * "504" would yield "capture_001504.pcap", which the index parser
+ * then reads as 1504. */
+#define PCAP_FILE_PATH_SSID_FMT PCAP_BASE_PATH "/capture_%03u_%s.pcap"
 #define PCAP_SSID_TAG_MAX 24
 #define PCAP_DIR_PATH    PCAP_BASE_PATH
 #define PCAP_FILE_MASK   8
