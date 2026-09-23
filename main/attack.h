@@ -139,6 +139,4 @@ void attack_get_autostop_debug(uint32_t *generation, bool *latched,
                                uint32_t *rearmed, int *bail_state,
                                uint32_t *bail_gen);
 
-/**
- * @brief Signals that the current attack reached its goal.
 #endif
