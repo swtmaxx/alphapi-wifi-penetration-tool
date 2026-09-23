@@ -28,6 +28,8 @@ ESP_EVENT_DEFINE_BASE(SNIFFER_EVENTS);
 static esp_event_loop_handle_t sniffer_loop = NULL;
 
 
+static volatile bool sniffer_active = false;
+
 static bool ensure_sniffer_loop(void)
 {
     if (sniffer_loop != NULL) return true;
@@ -131,9 +133,16 @@ void wifictl_sniffer_start(uint8_t channel) {
     esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
     esp_wifi_set_promiscuous(true);
     esp_wifi_set_promiscuous_rx_cb(&frame_handler);
+    sniffer_active = true;
+}
+
+bool wifictl_sniffer_is_active(void)
+{
+    return sniffer_active;
 }
 
 void wifictl_sniffer_stop() {
     ESP_LOGI(TAG, "Stopping promiscuous mode...");
     esp_wifi_set_promiscuous(false);
+    sniffer_active = false;
 }

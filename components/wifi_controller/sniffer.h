@@ -63,4 +63,13 @@ void wifictl_sniffer_start(uint8_t channel);
  */
 void wifictl_sniffer_stop();
 
+/**
+ * @brief Whether promiscuous mode is currently running.
+ *
+ * While the sniffer owns the radio the channel is already set and the
+ * management AP must not be reconfigured, otherwise the AP restart would
+ * break the capture.
+ */
+bool wifictl_sniffer_is_active(void);
+
 #endif
