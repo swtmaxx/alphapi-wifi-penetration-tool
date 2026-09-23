@@ -11,11 +11,11 @@
 #include "freertos/task.h"
 #include "driver/gpio.h"
 #include "esp_err.h"
+#include "sdkconfig.h"
 #include "esp_event.h"
 
 #include "display.h"
 #include "attack.h"
-#include "hccapx_serializer.h"
 #include "pcap_serializer.h"
 #include "webserver.h"
 #include "wifi_controller.h"
@@ -34,7 +34,6 @@
 #define LINE_H           16
 #define FOOTER_Y         112
 #define AP_VISIBLE        6
-#define RESULT_BYTES_PAGE 24
 
 typedef enum {
     SCREEN_MAIN_MENU,
@@ -45,7 +44,6 @@ typedef enum {
     SCREEN_ATTACK_TIMEOUT,
     SCREEN_ATTACK_CONFIRM,
     SCREEN_ATTACK_STATUS,
-    SCREEN_RESULT,
     SCREEN_CAPTURE
 } screen_id_t;
 
@@ -65,7 +63,7 @@ typedef struct {
     uint8_t atk_method;
     uint8_t atk_timeout_index;
     uint8_t atk_timeout_seconds;
-    uint16_t result_page;
+    uint8_t capture_index;
     scan_state_t scan_state;
     esp_err_t scan_error;
     bool dirty;
@@ -75,9 +73,9 @@ static ui_state_t ui;
 static const char *UI_TAG = "screen_ui";
 
 static const char *main_menu_items[] = {
-    "状态", "网络扫描", "攻击结果", "抓包文件"
+    "设备信息", "网络扫描", "抓包文件"
 };
-#define MAIN_MENU_COUNT 4
+#define MAIN_MENU_COUNT 3
 
 static const char *attack_type_names[] = {
     "被动", "握手", "PMKID", "拒绝服务"
@@ -164,23 +162,26 @@ static void draw_main_menu(void)
 
 static void draw_status(void)
 {
-    char buf[32];
-    attack_status_t status;
-    wifictl_ap_records_t records;
+    char buf[48];
 
-    display_draw_text_utf8(3, CONTENT_Y, "AlphaPi", COLOR_GREEN, COLOR_BLACK);
-    display_draw_text_utf8(3, CONTENT_Y + LINE_H, "芯片 ESP32-S2", COLOR_WHITE, COLOR_BLACK);
-    if (copy_records(&records)) {
-        snprintf(buf, sizeof(buf), "AP 数量 %u", records.count);
-        display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, buf, COLOR_YELLOW, COLOR_BLACK);
-    }
-    if (attack_get_status_snapshot(&status)) {
-        snprintf(buf, sizeof(buf), "攻击 %s", attack_state_name(status.state));
-        display_draw_text_utf8(3, CONTENT_Y + 3 * LINE_H, buf,
-                               status.state == RUNNING ? COLOR_ORANGE : COLOR_WHITE,
-                               COLOR_BLACK);
-        attack_free_status_snapshot(&status);
-    }
+    /* Hotspot credentials: the only place on device where they are visible. */
+    display_draw_text_utf8(3, CONTENT_Y, "热点 " CONFIG_MGMT_AP_SSID, COLOR_GREEN, COLOR_BLACK);
+    display_draw_text_utf8(3, CONTENT_Y + LINE_H, "密码 " CONFIG_MGMT_AP_PASSWORD,
+                           COLOR_YELLOW, COLOR_BLACK);
+    display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, "地址 192.168.4.1",
+                           COLOR_WHITE, COLOR_BLACK);
+
+    /* Storage summary is only visible here on device. */
+    pcap_file_info_t files[PCAP_LIST_MAX];
+    unsigned count = pcap_serializer_list(files, PCAP_LIST_MAX);
+    unsigned total = 0;
+    for (unsigned i = 0; i < count; i++) total += files[i].size;
+    snprintf(buf, sizeof(buf), "抓包 %u 个 %u B", count, total);
+    display_draw_text_utf8(3, CONTENT_Y + 3 * LINE_H, buf, COLOR_CYAN, COLOR_BLACK);
+
+    snprintf(buf, sizeof(buf), "信道 %d", CONFIG_MGMT_AP_CHANNEL);
+    display_draw_text_utf8(3, CONTENT_Y + 4 * LINE_H, buf, COLOR_GRAY, COLOR_BLACK);
+
     draw_footer("返回=菜单");
 }
 
@@ -316,32 +317,19 @@ static void draw_attack_confirm(void)
     draw_footer("确定=开始 返回=取消");
 }
 
-static void draw_hex_page(const uint8_t *data, unsigned size)
-{
-    char line[24];
-    unsigned offset = (unsigned)ui.result_page * RESULT_BYTES_PAGE;
-    for (unsigned row = 0; row < 3 && offset < size; row++) {
-        unsigned count = size - offset;
-        if (count > 6) count = 6;
-        unsigned pos = 0;
-        for (unsigned i = 0; i < count; i++) {
-            pos += (unsigned)snprintf(&line[pos], sizeof(line) - pos, "%02X ", data[offset + i]);
-        }
-        line[pos] = '\0';
-        display_draw_text(3, CONTENT_Y + 3 * LINE_H + (int16_t)row * LINE_H, line, COLOR_CYAN, COLOR_BLACK);
-        offset += count;
-    }
-}
+
 
 static void draw_attack_status(void)
 {
     attack_status_t status;
     char buf[32];
     if (!attack_get_status_snapshot(&status)) return;
+
     snprintf(buf, sizeof(buf), "状态 %s", attack_state_name(status.state));
     display_draw_text_utf8(3, CONTENT_Y, buf,
                            status.state == RUNNING ? COLOR_ORANGE : COLOR_WHITE,
                            COLOR_BLACK);
+
     snprintf(buf, sizeof(buf), "类型 %s",
              status.type < ATTACK_TYPE_COUNT ? attack_type_names[status.type] : "-");
     display_draw_text_utf8(3, CONTENT_Y + LINE_H, buf, COLOR_WHITE, COLOR_BLACK);
@@ -362,44 +350,82 @@ static void draw_attack_status(void)
         snprintf(buf, sizeof(buf), "数据 %u 字节", status.content_size);
         display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, buf, COLOR_CYAN, COLOR_BLACK);
     }
+
     attack_free_status_snapshot(&status);
     draw_footer("返回=停止");
 }
 
-static void draw_result(void)
+static void format_size(char *out, size_t out_size, unsigned bytes)
 {
-    attack_status_t status;
-    char buf[32];
-    if (!attack_get_status_snapshot(&status)) return;
-    display_draw_text_utf8(3, CONTENT_Y, "攻击结果", COLOR_YELLOW, COLOR_BLACK);
-    snprintf(buf, sizeof(buf), "状态 %s", attack_state_name(status.state));
-    display_draw_text_utf8(3, CONTENT_Y + LINE_H, buf, COLOR_WHITE, COLOR_BLACK);
-    if (status.content != NULL && status.content_size > 0) {
-        unsigned pages = (status.content_size + RESULT_BYTES_PAGE - 1) / RESULT_BYTES_PAGE;
-        if (pages == 0) pages = 1;
-        if (ui.result_page >= pages) ui.result_page = pages - 1;
-        snprintf(buf, sizeof(buf), "第 %u/%u 页", ui.result_page + 1, pages);
-        display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, buf, COLOR_WHITE, COLOR_BLACK);
-        draw_hex_page((const uint8_t *)status.content, status.content_size);
+    if (bytes < 1024) {
+        snprintf(out, out_size, "%uB", bytes);
+    } else if (bytes < 1024 * 1024) {
+        /* one decimal place computed with integer math: tenths = bytes*10/1024 */
+        unsigned tenths = (bytes * 10u) / 1024u;
+        snprintf(out, out_size, "%u.%uK", tenths / 10u, tenths % 10u);
     } else {
-        display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, "暂无结果", COLOR_GRAY, COLOR_BLACK);
+        unsigned tenths = (bytes * 10u) / (1024u * 1024u);
+        snprintf(out, out_size, "%u.%uM", tenths / 10u, tenths % 10u);
     }
-    attack_free_status_snapshot(&status);
-    draw_footer("上下=翻页 返回=菜单");
 }
 
 static void draw_capture(void)
 {
-    char buf[32];
-    hccapx_t *hccapx = hccapx_serializer_get();
-    display_draw_text_utf8(3, CONTENT_Y, "抓包文件", COLOR_YELLOW, COLOR_BLACK);
-    snprintf(buf, sizeof(buf), "PCAP %u 字节", pcap_serializer_get_size());
-    display_draw_text_utf8(3, CONTENT_Y + LINE_H, buf, COLOR_WHITE, COLOR_BLACK);
-    display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H,
-                           hccapx ? "HCCAPX 可用" : "HCCAPX 暂无",
-                           hccapx ? COLOR_GREEN : COLOR_GRAY, COLOR_BLACK);
-    display_draw_text_utf8(3, CONTENT_Y + 3 * LINE_H, "文件保存在 Flash", COLOR_GRAY, COLOR_BLACK);
-    draw_footer("返回=菜单");
+    char buf[48];
+    char sizebuf[16];
+    static pcap_file_info_t files[PCAP_LIST_MAX];
+    unsigned count = pcap_serializer_list(files, PCAP_LIST_MAX);
+
+    if (count == 0) {
+        display_draw_text_utf8(3, CONTENT_Y, "暂无抓包文件", COLOR_GRAY, COLOR_BLACK);
+        display_draw_text_utf8(3, CONTENT_Y + LINE_H, "先做一次握手抓包", COLOR_GRAY, COLOR_BLACK);
+        draw_footer("返回=菜单");
+        return;
+    }
+
+    if (ui.capture_index >= count) ui.capture_index = count - 1;
+
+    unsigned total = 0;
+    for (unsigned i = 0; i < count; i++) total += files[i].size;
+    format_size(sizebuf, sizeof(sizebuf), total);
+    snprintf(buf, sizeof(buf), "共 %u 个 %s", count, sizebuf);
+    display_draw_text_utf8(3, CONTENT_Y, buf, COLOR_YELLOW, COLOR_BLACK);
+
+    int16_t y = CONTENT_Y + LINE_H;
+    uint8_t shown = 0;
+    uint8_t scroll = ui.capture_index >= AP_VISIBLE ? ui.capture_index - AP_VISIBLE + 1 : 0;
+    for (unsigned i = scroll; i < count && shown < AP_VISIBLE; i++, shown++) {
+        uint16_t fg = i == ui.capture_index ? COLOR_BLACK : COLOR_WHITE;
+        uint16_t bg = i == ui.capture_index ? COLOR_YELLOW : COLOR_BLACK;
+        display_fill_rect(1, y, DISPLAY_WIDTH - 2, LINE_H, bg);
+
+        char name[32];
+        strncpy(name, files[i].name, sizeof(name) - 1);
+        name[sizeof(name) - 1] = '\0';
+
+        format_size(sizebuf, sizeof(sizebuf), files[i].size);
+        char right[16];
+        snprintf(right, sizeof(right), "%s", sizebuf);
+        int16_t right_w = display_text_width(right, 1);
+        int16_t right_x = DISPLAY_WIDTH - right_w - 3;
+        if (right_x < 4) right_x = 4;
+
+        /* Clip the name so it never reaches the size column. */
+        int16_t avail = right_x - 4 - 2;
+        int16_t used = 0;
+        size_t out = 0;
+        for (const uint8_t *p = (const uint8_t *) name; *p != '\0' && used < avail; p++) {
+            if (used + 6 > avail) break;
+            name[out++] = (char) *p;
+            used += 6;
+        }
+        name[out] = '\0';
+
+        display_draw_text(4, y, name, fg, bg);
+        display_draw_text(right_x, y, right, fg, bg);
+        y += LINE_H;
+    }
+    draw_footer("上下=选择");
 }
 
 static void render(void)
@@ -407,14 +433,13 @@ static void render(void)
     display_fill(COLOR_BLACK);
     switch (ui.screen) {
         case SCREEN_MAIN_MENU: draw_header("主菜单"); draw_main_menu(); break;
-        case SCREEN_STATUS: draw_header("状态"); draw_status(); break;
+        case SCREEN_STATUS: draw_header("设备信息"); draw_status(); break;
         case SCREEN_AP_LIST: draw_header("网络扫描"); draw_ap_list(); break;
         case SCREEN_ATTACK_TYPE: draw_header("攻击类型"); draw_attack_type(); break;
         case SCREEN_ATTACK_METHOD: draw_header("攻击方式"); draw_attack_method(); break;
         case SCREEN_ATTACK_TIMEOUT: draw_header("攻击超时"); draw_timeout(); break;
         case SCREEN_ATTACK_CONFIRM: draw_header("确认攻击"); draw_attack_confirm(); break;
         case SCREEN_ATTACK_STATUS: draw_header("攻击状态"); draw_attack_status(); break;
-        case SCREEN_RESULT: draw_header("攻击结果"); draw_result(); break;
         case SCREEN_CAPTURE: draw_header("抓包文件"); draw_capture(); break;
         default: break;
     }
@@ -476,8 +501,7 @@ static void handle_enter(void)
             switch (ui.menu_index) {
                 case 0: ui.screen = SCREEN_STATUS; break;
                 case 1: ui.screen = SCREEN_AP_LIST; request_scan(); break;
-                case 2: ui.screen = SCREEN_RESULT; ui.result_page = 0; break;
-                case 3: ui.screen = SCREEN_CAPTURE; break;
+                case 2: ui.screen = SCREEN_CAPTURE; ui.capture_index = 0; break;
                 default: break;
             }
             break;
@@ -535,17 +559,16 @@ static void handle_back(void)
     switch (ui.screen) {
         case SCREEN_MAIN_MENU: break;
         case SCREEN_AP_LIST:
-        case SCREEN_RESULT:
         case SCREEN_CAPTURE:
         case SCREEN_STATUS:
             ui.screen = SCREEN_MAIN_MENU;
             ui.menu_index = 0;
             break;
         case SCREEN_ATTACK_STATUS:
-            /* Non-blocking: a full queue while sniffing must not freeze the UI task. */
+            /* Stop the attack and go back to the scan list for another run.
+               Non-blocking: a full queue while sniffing must not freeze the UI. */
             esp_event_post(WEBSERVER_EVENTS, WEBSERVER_EVENT_ATTACK_RESET, NULL, 0, pdMS_TO_TICKS(100));
-            ui.screen = SCREEN_RESULT;
-            ui.result_page = 0;
+            ui.screen = SCREEN_AP_LIST;
             break;
         case SCREEN_ATTACK_TYPE:
         case SCREEN_ATTACK_METHOD:
@@ -573,7 +596,7 @@ static void handle_up(void)
         case SCREEN_ATTACK_TIMEOUT:
             ui.menu_index = (ui.menu_index + TIMEOUT_COUNT - 1) % TIMEOUT_COUNT;
             break;
-        case SCREEN_RESULT: if (ui.result_page > 0) ui.result_page--; break;
+        case SCREEN_CAPTURE: if (ui.capture_index > 0) ui.capture_index--; break;
         default: break;
     }
 }
@@ -598,7 +621,12 @@ static void handle_down(void)
         case SCREEN_ATTACK_TIMEOUT:
             ui.menu_index = (ui.menu_index + 1) % TIMEOUT_COUNT;
             break;
-        case SCREEN_RESULT: ui.result_page++; break;
+        case SCREEN_CAPTURE: {
+            static pcap_file_info_t files[PCAP_LIST_MAX];
+            unsigned count = pcap_serializer_list(files, PCAP_LIST_MAX);
+            if (ui.capture_index + 1 < count) ui.capture_index++;
+            break;
+        }
         default: break;
     }
 }
