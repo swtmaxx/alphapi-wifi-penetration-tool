@@ -21,6 +21,27 @@ enum {
 };
 
 /**
+ * @brief Event loop that carries captured frames.
+ *
+ * Captured frames are posted to this private loop instead of the default one,
+ * so a busy sniffer cannot starve other components. Register handlers with
+ * esp_event_handler_register_with(loop, SNIFFER_EVENTS, ...).
+ *
+ * @return handle, or NULL before wifictl_sniffer_start() was called
+ */
+esp_event_loop_handle_t wifictl_sniffer_event_loop(void);
+
+/**
+ * @brief Create the sniffer event loop if it does not exist yet.
+ *
+ * Callers that register handlers before starting the sniffer (for example the
+ * client counter) use this so the loop is ready.
+ *
+ * @return true when the loop is available
+ */
+bool wifictl_sniffer_loop_ready(void);
+
+/**
  * @brief Sets sniffer filter for specific frame types. 
  * 
  * @param data sniff data frames

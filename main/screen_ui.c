@@ -505,8 +505,10 @@ static void handle_enter(void)
                 .method = ui.atk_method,
                 .timeout = ui.atk_timeout_seconds,
             };
+            /* Never block the UI task on a full event queue: the sniffer floods
+               the shared default loop while an attack runs. */
             esp_event_post(WEBSERVER_EVENTS, WEBSERVER_EVENT_ATTACK_REQUEST,
-                           &request, sizeof(request), portMAX_DELAY);
+                           &request, sizeof(request), pdMS_TO_TICKS(100));
             ui.screen = SCREEN_ATTACK_STATUS;
             break;
         }
@@ -526,7 +528,8 @@ static void handle_back(void)
             ui.menu_index = 0;
             break;
         case SCREEN_ATTACK_STATUS:
-            esp_event_post(WEBSERVER_EVENTS, WEBSERVER_EVENT_ATTACK_RESET, NULL, 0, portMAX_DELAY);
+            /* Non-blocking: a full queue while sniffing must not freeze the UI task. */
+            esp_event_post(WEBSERVER_EVENTS, WEBSERVER_EVENT_ATTACK_RESET, NULL, 0, pdMS_TO_TICKS(100));
             ui.screen = SCREEN_RESULT;
             ui.result_page = 0;
             break;

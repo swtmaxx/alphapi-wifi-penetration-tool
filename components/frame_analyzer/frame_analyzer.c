@@ -53,9 +53,15 @@ static void data_frame_handler(void *args, esp_event_base_t event_base, int32_t 
         return;
     }
 
+    /* Downstream handlers run on the same private loop; posting with a zero
+       timeout drops rather than blocking the Wi-Fi driver when it is full. */
+    esp_event_loop_handle_t loop = wifictl_sniffer_event_loop();
+    if (loop == NULL) return;
+
     if(search_type == SEARCH_HANDSHAKE){
-        // TODO handle timeouts properly by e.g. for cycle
-        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_event_post(FRAME_ANALYZER_EVENTS, DATA_FRAME_EVENT_EAPOLKEY_FRAME, frame, sizeof(wifi_promiscuous_pkt_t) + frame->rx_ctrl.sig_len, portMAX_DELAY));
+        esp_event_post_to(loop, FRAME_ANALYZER_EVENTS, DATA_FRAME_EVENT_EAPOLKEY_FRAME,
+                          frame,
+                          sizeof(wifi_promiscuous_pkt_t) + frame->rx_ctrl.sig_len, 0);
         return;
     }
 
@@ -64,7 +70,8 @@ static void data_frame_handler(void *args, esp_event_base_t event_base, int32_t 
         if((pmkid_items = parse_pmkid(eapol_key_packet)) == NULL){
             return;
         }
-        ESP_ERROR_CHECK(esp_event_post(FRAME_ANALYZER_EVENTS, DATA_FRAME_EVENT_PMKID, &pmkid_items, sizeof(pmkid_item_t *), portMAX_DELAY));
+        esp_event_post_to(loop, FRAME_ANALYZER_EVENTS, DATA_FRAME_EVENT_PMKID,
+                          &pmkid_items, sizeof(pmkid_item_t *), 0);
         return;
     }
 }
@@ -73,9 +80,22 @@ void frame_analyzer_capture_start(search_type_t search_type_arg, const uint8_t *
     ESP_LOGI(TAG, "Frame analysis started...");
     search_type = search_type_arg;
     memcpy(&target_bssid, bssid, 6);
-    ESP_ERROR_CHECK(esp_event_handler_register(SNIFFER_EVENTS, SNIFFER_EVENT_CAPTURED_DATA, &data_frame_handler, NULL));
+
+    /* Frames arrive on the sniffer's private loop, not the default loop. */
+    esp_event_loop_handle_t loop = wifictl_sniffer_event_loop();
+    if (loop == NULL) {
+        ESP_LOGE(TAG, "Sniffer loop not ready; frame analysis disabled");
+        return;
+    }
+    ESP_ERROR_CHECK(esp_event_handler_register_with(loop, SNIFFER_EVENTS,
+                                                    SNIFFER_EVENT_CAPTURED_DATA,
+                                                    &data_frame_handler, NULL));
 }
 
 void frame_analyzer_capture_stop(){
-    ESP_ERROR_CHECK(esp_event_handler_unregister(SNIFFER_EVENTS, SNIFFER_EVENT_CAPTURED_DATA, &data_frame_handler));
+    esp_event_loop_handle_t loop = wifictl_sniffer_event_loop();
+    if (loop == NULL) return;
+    ESP_ERROR_CHECK(esp_event_handler_unregister_with(loop, SNIFFER_EVENTS,
+                                                      SNIFFER_EVENT_CAPTURED_DATA,
+                                                      &data_frame_handler));
 }

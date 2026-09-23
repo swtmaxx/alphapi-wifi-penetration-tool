@@ -141,7 +141,11 @@ static void client_counting_task(void *arg)
     }
 
     if (handler_registered) {
-        esp_event_handler_unregister(SNIFFER_EVENTS, ESP_EVENT_ANY_ID, &client_frame_handler);
+        esp_event_loop_handle_t loop = wifictl_sniffer_event_loop();
+        if (loop != NULL) {
+            esp_event_handler_unregister_with(loop, SNIFFER_EVENTS, ESP_EVENT_ANY_ID,
+                                              &client_frame_handler);
+        }
         handler_registered = false;
     }
 
@@ -163,7 +167,15 @@ void wifictl_start_client_counting(void)
     }
 
     if (!handler_registered) {
-        esp_event_handler_register(SNIFFER_EVENTS, ESP_EVENT_ANY_ID, &client_frame_handler, NULL);
+        /* The sniffer may not have run yet, so create its loop first. */
+        if (!wifictl_sniffer_loop_ready()) {
+            ESP_LOGE(TAG, "Sniffer loop not ready; cannot count clients");
+            counting_active = false;
+            return;
+        }
+        esp_event_loop_handle_t loop = wifictl_sniffer_event_loop();
+        esp_event_handler_register_with(loop, SNIFFER_EVENTS, ESP_EVENT_ANY_ID,
+                                        &client_frame_handler, NULL);
         handler_registered = true;
     }
 
