@@ -369,15 +369,24 @@ static void format_size(char *out, size_t out_size, unsigned bytes)
     }
 }
 
+/* Shared between drawing and navigation so the list is scanned once per redraw. */
+static pcap_file_info_t capture_cache[PCAP_LIST_MAX * 2];
+static unsigned capture_cache_count = 0;
+
+static unsigned capture_cache_refresh(void)
+{
+    unsigned count = pcap_serializer_list(capture_cache, PCAP_LIST_MAX);
+    count += pcap_serializer_list_text(capture_cache + count, PCAP_LIST_MAX);
+    capture_cache_count = count;
+    return count;
+}
+
 static void draw_capture(void)
 {
     char buf[48];
     char sizebuf[16];
-    static pcap_file_info_t files[PCAP_LIST_MAX * 2];
-    /* captures first, then PMKID text results */
-    unsigned cap_count = pcap_serializer_list(files, PCAP_LIST_MAX);
-    unsigned txt_count = pcap_serializer_list_text(files + cap_count, PCAP_LIST_MAX);
-    unsigned count = cap_count + txt_count;
+    unsigned count = capture_cache_refresh();
+    pcap_file_info_t *files = capture_cache;
 
     if (count == 0) {
         display_draw_text_utf8(3, CONTENT_Y, "暂无抓包文件", COLOR_GRAY, COLOR_BLACK);
@@ -625,6 +634,7 @@ static void handle_down(void)
             ui.menu_index = (ui.menu_index + 1) % TIMEOUT_COUNT;
             break;
         case SCREEN_CAPTURE:
+            if (capture_cache_count == 0) capture_cache_refresh();
             if (ui.capture_index + 1 < capture_cache_count) ui.capture_index++;
             break;
         default: break;
