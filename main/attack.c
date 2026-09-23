@@ -14,6 +14,7 @@
 #include "attack.h"
 
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <unistd.h>
 #include "freertos/FreeRTOS.h"
@@ -100,22 +101,35 @@ void attack_update_status(attack_state_t state) {
 }
 
 /**
+ * @brief Generation counter, bumped for every dispatched attack.
+ *
+ * A deferred stop task may outlive the attack that spawned it (the user can
+ * abort and restart within the delay window). Comparing generations makes the
+ * task act only on the attack it belongs to, so it can never tear down a
+ * run that started afterwards.
+ */
+static volatile uint32_t attack_generation = 0;
+
+/**
  * @brief Deferred teardown after a successful capture.
  *
  * Runs outside the sniffer event loop so unregistering handlers there is safe.
+ * @param arg the attack generation that requested this stop, as a pointer value
  */
 static void success_stop_task(void *arg)
 {
-    (void) arg;
+    uint32_t my_generation = (uint32_t) (uintptr_t) arg;
     vTaskDelay(pdMS_TO_TICKS(200));
 
     uint8_t type;
     status_lock();
+    bool current = (attack_status.state == RUNNING) &&
+                   (attack_generation == my_generation);
     type = attack_status.type;
-    bool running = attack_status.state == RUNNING;
     status_unlock();
 
-    if (!running) {
+    if (!current) {
+        /* Either already finished, or a newer attack owns the state now. */
         vTaskDelete(NULL);
         return;
     }
@@ -135,14 +149,32 @@ static void success_stop_task(void *arg)
     vTaskDelete(NULL);
 }
 
+/**
+ * @brief Latched "a usable result was captured" flag.
+ *
+ * Reset by attack_start_success_latch() at the beginning of every attack so
+ * that back-to-back runs each stop on their own result. Without the reset the
+ * flag stayed set for the lifetime of the firmware and only the first attack
+ * ever auto-stopped.
+ */
+static volatile bool success_latched = false;
+
+/**
+ * @brief Re-arm the auto-stop latch. Call when a new attack is dispatched.
+ */
+static void attack_reset_success_latch(void)
+{
+    success_latched = false;
+}
+
 void attack_signal_success(void)
 {
-    static volatile bool pending = false;
-    if (pending) return;
-    pending = true;
+    if (success_latched) return;
+    success_latched = true;
     /* 4096 bytes is enough for the teardown path. */
-    if (xTaskCreate(success_stop_task, "atk_success", 4096, NULL, 5, NULL) != pdPASS) {
-        pending = false;
+    void *generation = (void *) (uintptr_t) attack_generation;
+    if (xTaskCreate(success_stop_task, "atk_success", 4096, generation, 5, NULL) != pdPASS) {
+        success_latched = false;
         ESP_LOGE(TAG, "Failed to schedule success stop");
     }
 }
@@ -273,6 +305,10 @@ static void attack_request_handler(void *args, esp_event_base_t event_base, int3
     attack_status.type = attack_config.type;
     status_unlock();
 
+    /* Re-arm auto-stop: the previous run may have latched it. */
+    attack_reset_success_latch();
+    attack_generation++;
+
     // set timeout
     if (esp_timer_is_active(attack_timeout_handle)) {
         ESP_ERROR_CHECK(esp_timer_stop(attack_timeout_handle));
@@ -311,6 +347,9 @@ static void attack_request_handler(void *args, esp_event_base_t event_base, int3
  */
 static void attack_reset_handler(void *args, esp_event_base_t event_base, int32_t event_id, void *event_data) {
     ESP_LOGD(TAG, "Resetting attack status...");
+
+    /* A manual stop must not leave the auto-stop latch set. */
+    attack_reset_success_latch();
 
     uint8_t type;
     bool stop_required;
