@@ -357,6 +357,19 @@ static void draw_attack_status(void)
         snprintf(buf, sizeof(buf), "帧 %u  %u B", frames, bytes);
         display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, buf,
                                frames > 0 ? COLOR_GREEN : COLOR_GRAY, COLOR_BLACK);
+
+        /* Auto-stop diagnostics: g=generation L=latch sched/acted bails=state.
+           The device has no readable console, so this line is the only way to
+           see why a run did or did not stop by itself. */
+        uint32_t gen = 0, sched = 0, acted = 0, rearmed = 0, bail_gen = 0;
+        bool latched = false;
+        int bail_state = -1;
+        attack_get_autostop_debug(&gen, &latched, &sched, &acted, &rearmed,
+                                  &bail_state, &bail_gen);
+        snprintf(buf, sizeof(buf), "g%lu L%d %lu/%lu b%d",
+                 (unsigned long) gen, latched ? 1 : 0,
+                 (unsigned long) sched, (unsigned long) acted, bail_state);
+        display_draw_text_utf8(3, CONTENT_Y + 3 * LINE_H, buf, COLOR_CYAN, COLOR_BLACK);
     } else if (status.content != NULL && status.content_size > 0) {
         snprintf(buf, sizeof(buf), "数据 %u 字节", status.content_size);
         display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, buf, COLOR_CYAN, COLOR_BLACK);

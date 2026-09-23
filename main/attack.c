@@ -110,6 +110,23 @@ void attack_update_status(attack_state_t state) {
  */
 static volatile uint32_t attack_generation = 0;
 
+/* Auto-stop accounting, surfaced through attack_get_autostop_debug(). */
+static volatile uint32_t autostop_scheduled = 0;
+static volatile uint32_t autostop_acted = 0;
+static volatile uint32_t autostop_rearmed = 0;
+/* Why the most recent stop task bailed out, for on-device diagnosis. */
+static volatile int last_bail_state = -1;
+static volatile uint32_t last_bail_gen = 0;
+
+/**
+ * @brief Latched "a usable result was captured" flag.
+ *
+ * Cleared by attack_reset_success_latch() when a new attack is dispatched, and
+ * also by a stop task that gave up, so a later signal can still try to stop.
+ * Without those resets only the very first attack would ever auto-stop.
+ */
+static volatile bool success_latched = false;
+
 /**
  * @brief Deferred teardown after a successful capture.
  *
@@ -129,11 +146,16 @@ static void success_stop_task(void *arg)
     status_unlock();
 
     if (!current) {
-        /* Either already finished, or a newer attack owns the state now. */
+        /* Either already finished, or a newer attack owns the state now.
+           Release the latch so a later signal can still try to stop. */
+        last_bail_state = attack_status.state;
+        last_bail_gen = attack_generation;
+        success_latched = false;
         vTaskDelete(NULL);
         return;
     }
 
+    autostop_acted++;
     attack_update_status(FINISHED);
     if (esp_timer_is_active(attack_timeout_handle)) {
         esp_timer_stop(attack_timeout_handle);
@@ -150,21 +172,38 @@ static void success_stop_task(void *arg)
 }
 
 /**
- * @brief Latched "a usable result was captured" flag.
- *
- * Reset by attack_start_success_latch() at the beginning of every attack so
- * that back-to-back runs each stop on their own result. Without the reset the
- * flag stayed set for the lifetime of the firmware and only the first attack
- * ever auto-stopped.
- */
-static volatile bool success_latched = false;
-
-/**
  * @brief Re-arm the auto-stop latch. Call when a new attack is dispatched.
  */
 static void attack_reset_success_latch(void)
 {
     success_latched = false;
+    autostop_rearmed++;
+}
+
+/**
+ * @brief Snapshot of the auto-stop state machine, for on-device diagnosis.
+ *
+ * The AlphaPi has no readable CDC console, so these counters are the only way
+ * to tell why a run did or did not stop by itself.
+ *
+ * @param generation  current attack generation
+ * @param latched     whether attack_signal_success() has already fired
+ * @param stop_tasks  number of stop tasks that were scheduled
+ * @param stopped     number of stop tasks that actually tore the attack down
+ * @param rearmed     number of times the latch was reset at dispatch time
+ */
+void attack_get_autostop_debug(uint32_t *generation, bool *latched,
+                               uint32_t *stop_tasks, uint32_t *stopped,
+                               uint32_t *rearmed, int *bail_state,
+                               uint32_t *bail_gen)
+{
+    if (generation) *generation = attack_generation;
+    if (latched) *latched = success_latched;
+    if (stop_tasks) *stop_tasks = autostop_scheduled;
+    if (stopped) *stopped = autostop_acted;
+    if (rearmed) *rearmed = autostop_rearmed;
+    if (bail_state) *bail_state = last_bail_state;
+    if (bail_gen) *bail_gen = last_bail_gen;
 }
 
 void attack_signal_success(void)
@@ -176,6 +215,8 @@ void attack_signal_success(void)
     if (xTaskCreate(success_stop_task, "atk_success", 4096, generation, 5, NULL) != pdPASS) {
         success_latched = false;
         ESP_LOGE(TAG, "Failed to schedule success stop");
+    } else {
+        autostop_scheduled++;
     }
 }
 

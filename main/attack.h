@@ -123,4 +123,22 @@ char *attack_alloc_result_content(unsigned size);
  */
 void attack_append_status_content(uint8_t *buffer, unsigned size);
 
+/**
+ * @brief Snapshot of the auto-stop state machine, for on-device diagnosis.
+ *
+ * @param generation current attack generation
+ * @param latched    whether attack_signal_success() has already fired
+ * @param stop_tasks number of stop tasks scheduled
+ * @param stopped    number of stop tasks that actually tore down the attack
+ * @param rearmed    number of re-arm operations at dispatch time
+ * @param bail_state state seen by the last stop task that gave up (-1 if none)
+ * @param bail_gen   generation seen by the last stop task that gave up
+ */
+void attack_get_autostop_debug(uint32_t *generation, bool *latched,
+                               uint32_t *stop_tasks, uint32_t *stopped,
+                               uint32_t *rearmed, int *bail_state,
+                               uint32_t *bail_gen);
+
+/**
+ * @brief Signals that the current attack reached its goal.
 #endif

@@ -75,6 +75,26 @@ static bool is_array_zero(uint8_t *array, unsigned size){
 }
 
 void hccapx_serializer_init(const uint8_t *ssid, unsigned size){
+    /* Reset the whole handshake state, not just message_pair.
+     *
+     * message_ap / message_sta / eapol_source drive the M1-M4 state machine.
+     * Leaving them set from a previous run makes ap_message_m3() and
+     * sta_message_m4() take their early-return branches, so message_pair never
+     * leaves 255 and the capture never signals success - which is exactly why
+     * the second handshake run did not stop on its own. */
+    message_ap = 0;
+    message_sta = 0;
+    eapol_source = 0;
+
+    memset(hccapx.keymic, 0, sizeof(hccapx.keymic));
+    memset(hccapx.mac_ap, 0, sizeof(hccapx.mac_ap));
+    memset(hccapx.mac_sta, 0, sizeof(hccapx.mac_sta));
+    memset(hccapx.nonce_ap, 0, sizeof(hccapx.nonce_ap));
+    memset(hccapx.nonce_sta, 0, sizeof(hccapx.nonce_sta));
+    memset(hccapx.eapol, 0, sizeof(hccapx.eapol));
+    hccapx.eapol_len = 0;
+
+    if (size > sizeof(hccapx.essid)) size = sizeof(hccapx.essid);
     hccapx.essid_len = size;
     memcpy(hccapx.essid, ssid, size);
     hccapx.message_pair = 255;
