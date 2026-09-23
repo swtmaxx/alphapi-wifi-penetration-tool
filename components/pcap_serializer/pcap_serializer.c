@@ -157,6 +157,44 @@ static bool build_full_path(char *out, size_t out_size, const char *name)
     return true;
 }
 
+/**
+ * @brief Parse "<prefix><digits>" and require the digits to end at '.' or '_'.
+ *
+ * A naive sscanf("<prefix>%u") is greedy: with a tagged name such as
+ * "capture_001_1001_WiFi5.pcap" it swallows "0011001" as the index, so every
+ * later capture gets a bogus, ever-growing number. Requiring an explicit
+ * separator after the digits keeps indexed names and legacy names apart.
+ *
+ * @param name   directory entry name, e.g. "capture_007_MyWiFi.pcap"
+ * @param prefix expected literal prefix, e.g. "capture_"
+ * @param out_index parsed index on success
+ * @return true when name matches the "<prefix><digits>(.|_)" shape
+ */
+static bool parse_indexed_name(const char *name, const char *prefix, unsigned *out_index)
+{
+    size_t prefix_len = strlen(prefix);
+    if (strncmp(name, prefix, prefix_len) != 0) return false;
+
+    const char *p = name + prefix_len;
+    if (*p < '0' || *p > '9') return false;
+
+    unsigned value = 0;
+    unsigned digits = 0;
+    while (*p >= '0' && *p <= '9') {
+        /* Anything this long is a corrupted legacy name, not a real index. */
+        if (digits >= 6) return false;
+        value = value * 10u + (unsigned) (*p - '0');
+        p++;
+        digits++;
+    }
+    if (digits == 0) return false;
+    /* The index must be followed by the extension dot or the SSID-tag separator. */
+    if (*p != '.' && *p != '_') return false;
+
+    *out_index = value;
+    return true;
+}
+
 static void pick_next_capture_path(void)
 {
     DIR *dir = opendir(PCAP_DIR_PATH);
@@ -166,9 +204,9 @@ static void pick_next_capture_path(void)
         while ((ent = readdir(dir)) != NULL) {
             unsigned idx = 0;
             /* Accept both capture_NNN.pcap and capture_NNN_tag.pcap. */
-            if (sscanf(ent->d_name, "capture_%u", &idx) == 1 ||
-                sscanf(ent->d_name, "capture_%u_", &idx) == 1) {
-                if (idx > max_index) max_index = idx;
+            if (parse_indexed_name(ent->d_name, "capture_", &idx) &&
+                idx > max_index) {
+                max_index = idx;
             }
         }
         closedir(dir);
@@ -340,7 +378,7 @@ unsigned pcap_serializer_list(pcap_file_info_t *out, unsigned max)
         while ((ent = readdir(dir)) != NULL && count < max) {
             unsigned idx = 0;
             /* Accept capture_NNN.pcap and capture_NNN_tag.pcap. */
-            if (sscanf(ent->d_name, "capture_%u", &idx) != 1) continue;
+            if (!parse_indexed_name(ent->d_name, "capture_", &idx)) continue;
 
             char full[96];
             if (!build_full_path(full, sizeof(full), ent->d_name)) continue;
@@ -410,9 +448,10 @@ static void pick_next_text_path(const char *prefix, char *out, size_t out_size)
         while ((ent = readdir(dir)) != NULL) {
             unsigned idx = 0;
             char pattern[32];
-            snprintf(pattern, sizeof(pattern), "%s_%%u", prefix);
-            if (sscanf(ent->d_name, pattern, &idx) == 1) {
-                if (idx > max_index) max_index = idx;
+            snprintf(pattern, sizeof(pattern), "%s_", prefix);
+            if (parse_indexed_name(ent->d_name, pattern, &idx) &&
+                idx > max_index) {
+                max_index = idx;
             }
         }
         closedir(dir);
