@@ -264,8 +264,10 @@ static httpd_uri_t uri_capture_hccapx_get = {
  * @{
  */
 static esp_err_t uri_pcap_list_get_handler(httpd_req_t *req) {
-    static pcap_file_info_t files[PCAP_LIST_MAX];
+    static pcap_file_info_t files[PCAP_LIST_MAX * 2];
+    /* captures plus PMKID text results */
     unsigned count = pcap_serializer_list(files, PCAP_LIST_MAX);
+    count += pcap_serializer_list_text(files + count, PCAP_LIST_MAX);
 
     httpd_resp_set_type(req, "application/json; charset=utf-8");
     esp_err_t res = httpd_resp_send_chunk(req, "[", 1);
@@ -305,8 +307,9 @@ static esp_err_t uri_capture_file_get_handler(httpd_req_t *req) {
     }
 
     /* Resolve the stored size first so the final partial chunk is not lost. */
-    static pcap_file_info_t files[PCAP_LIST_MAX];
+    static pcap_file_info_t files[PCAP_LIST_MAX * 2];
     unsigned count = pcap_serializer_list(files, PCAP_LIST_MAX);
+    count += pcap_serializer_list_text(files + count, PCAP_LIST_MAX);
     unsigned total = 0;
     bool found = false;
     for (unsigned i = 0; i < count; i++) {

@@ -111,4 +111,28 @@ unsigned pcap_serializer_list(pcap_file_info_t *out, unsigned max);
  */
 bool pcap_serializer_read_file(const char *name, unsigned offset, uint8_t *buf, unsigned len);
 
+/**
+ * @brief Write a small text result next to the captures.
+ *
+ * Used for PMKID output, which is a single hashcat-ready line rather than a
+ * frame stream, so it needs no PCAP container.
+ *
+ * @param prefix file-name prefix, e.g. "pmkid"
+ * @param ssid   target SSID, used as an optional name tag (may be NULL)
+ * @param ssid_len number of valid bytes in ssid
+ * @param text   NUL-terminated content to store
+ * @return true on success
+ */
+bool pcap_serializer_write_text(const char *prefix, const uint8_t *ssid,
+                                unsigned ssid_len, const char *text);
+
+/**
+ * @brief List stored text result files (same directory as captures).
+ *
+ * @param out caller-owned array
+ * @param max capacity of out
+ * @return number of files written
+ */
+unsigned pcap_serializer_list_text(pcap_file_info_t *out, unsigned max);
+
 #endif /* PCAP_SERIALIZER_H */

@@ -373,8 +373,11 @@ static void draw_capture(void)
 {
     char buf[48];
     char sizebuf[16];
-    static pcap_file_info_t files[PCAP_LIST_MAX];
-    unsigned count = pcap_serializer_list(files, PCAP_LIST_MAX);
+    static pcap_file_info_t files[PCAP_LIST_MAX * 2];
+    /* captures first, then PMKID text results */
+    unsigned cap_count = pcap_serializer_list(files, PCAP_LIST_MAX);
+    unsigned txt_count = pcap_serializer_list_text(files + cap_count, PCAP_LIST_MAX);
+    unsigned count = cap_count + txt_count;
 
     if (count == 0) {
         display_draw_text_utf8(3, CONTENT_Y, "暂无抓包文件", COLOR_GRAY, COLOR_BLACK);
@@ -621,12 +624,9 @@ static void handle_down(void)
         case SCREEN_ATTACK_TIMEOUT:
             ui.menu_index = (ui.menu_index + 1) % TIMEOUT_COUNT;
             break;
-        case SCREEN_CAPTURE: {
-            static pcap_file_info_t files[PCAP_LIST_MAX];
-            unsigned count = pcap_serializer_list(files, PCAP_LIST_MAX);
-            if (ui.capture_index + 1 < count) ui.capture_index++;
+        case SCREEN_CAPTURE:
+            if (ui.capture_index + 1 < capture_cache_count) ui.capture_index++;
             break;
-        }
         default: break;
     }
 }
@@ -649,7 +649,9 @@ static void ui_task(void *arg)
             ui.dirty = false;
         }
         run_pending_scan();
-        if (ui.screen == SCREEN_ATTACK_STATUS || ui.screen == SCREEN_CAPTURE) {
+        /* Only the attack status page needs periodic redraw; the capture list
+           is static and re-listing it every tick would hammer SPIFFS. */
+        if (ui.screen == SCREEN_ATTACK_STATUS) {
             ui.dirty = true;
         }
         vTaskDelay(pdMS_TO_TICKS(RENDER_PERIOD_MS));

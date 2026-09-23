@@ -398,3 +398,108 @@ bool pcap_serializer_read_file(const char *name, unsigned offset, uint8_t *buf, 
     unlock_serializer();
     return ok;
 }
+/**
+ * @brief Pick the next "<prefix>_NNN[_tag].txt" path, scanning existing files.
+ */
+static void pick_next_text_path(const char *prefix, char *out, size_t out_size)
+{
+    DIR *dir = opendir(PCAP_DIR_PATH);
+    unsigned max_index = 0;
+    if (dir != NULL) {
+        struct dirent *ent;
+        while ((ent = readdir(dir)) != NULL) {
+            unsigned idx = 0;
+            char pattern[32];
+            snprintf(pattern, sizeof(pattern), "%s_%%u", prefix);
+            if (sscanf(ent->d_name, pattern, &idx) == 1) {
+                if (idx > max_index) max_index = idx;
+            }
+        }
+        closedir(dir);
+    }
+
+    if (pcap_ssid_tag[0] != '\0') {
+        snprintf(out, out_size, PCAP_BASE_PATH "/%s_%03u_%s.txt",
+                 prefix, max_index + 1, pcap_ssid_tag);
+    } else {
+        snprintf(out, out_size, PCAP_BASE_PATH "/%s_%03u.txt",
+                 prefix, max_index + 1);
+    }
+}
+
+bool pcap_serializer_write_text(const char *prefix, const uint8_t *ssid,
+                                unsigned ssid_len, const char *text)
+{
+    if (prefix == NULL || text == NULL) return false;
+    if (!ensure_mutex()) return false;
+
+    lock_serializer();
+    if (!mount_spiffs()) {
+        unlock_serializer();
+        return false;
+    }
+
+    build_ssid_tag(ssid, ssid_len);
+    mkdir(PCAP_DIR_PATH, 0777);
+
+    char path[96];
+    pick_next_text_path(prefix, path, sizeof(path));
+
+    FILE *file = fopen(path, "w");
+    if (file == NULL) {
+        ESP_LOGE(TAG, "Failed to open %s", path);
+        unlock_serializer();
+        return false;
+    }
+
+    size_t len = strlen(text);
+    bool ok = (fwrite(text, 1, len, file) == len);
+    if (ok) ok = (fputc('\n', file) != EOF);
+    fclose(file);
+
+    if (!ok) {
+        ESP_LOGE(TAG, "Failed to write %s", path);
+    } else {
+        ESP_LOGI(TAG, "Saved result to %s", path);
+    }
+    unlock_serializer();
+    return ok;
+}
+
+unsigned pcap_serializer_list_text(pcap_file_info_t *out, unsigned max)
+{
+    if (out == NULL || max == 0) return 0;
+    if (!ensure_mutex()) return 0;
+
+    lock_serializer();
+    if (!mount_spiffs()) {
+        unlock_serializer();
+        return 0;
+    }
+
+    unsigned count = 0;
+    DIR *dir = opendir(PCAP_DIR_PATH);
+    if (dir != NULL) {
+        struct dirent *ent;
+        while ((ent = readdir(dir)) != NULL && count < max) {
+            /* only *.txt results live here, captures are *.pcap */
+            const char *dot = strrchr(ent->d_name, '.');
+            if (dot == NULL || strcmp(dot, ".txt") != 0) continue;
+
+            char full[96];
+            if (!build_full_path(full, sizeof(full), ent->d_name)) continue;
+            struct stat st;
+            if (stat(full, &st) != 0) continue;
+
+            strncpy(out[count].name, ent->d_name, sizeof(out[count].name) - 1);
+            out[count].name[sizeof(out[count].name) - 1] = '\0';
+            out[count].size = (unsigned)st.st_size;
+            count++;
+        }
+        closedir(dir);
+    }
+    unlock_serializer();
+
+    qsort(out, count, sizeof(pcap_file_info_t), compare_file_info);
+    return count;
+}

