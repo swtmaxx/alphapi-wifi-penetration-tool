@@ -18,6 +18,7 @@
 #include <unistd.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
 #include "esp_log.h"
 #include "esp_err.h"
@@ -96,6 +97,54 @@ void attack_update_status(attack_state_t state) {
             ESP_ERROR_CHECK(esp_timer_stop(attack_timeout_handle));
         }
     } 
+}
+
+/**
+ * @brief Deferred teardown after a successful capture.
+ *
+ * Runs outside the sniffer event loop so unregistering handlers there is safe.
+ */
+static void success_stop_task(void *arg)
+{
+    (void) arg;
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    uint8_t type;
+    status_lock();
+    type = attack_status.type;
+    bool running = attack_status.state == RUNNING;
+    status_unlock();
+
+    if (!running) {
+        vTaskDelete(NULL);
+        return;
+    }
+
+    attack_update_status(FINISHED);
+    if (esp_timer_is_active(attack_timeout_handle)) {
+        esp_timer_stop(attack_timeout_handle);
+    }
+
+    switch (type) {
+        case ATTACK_TYPE_HANDSHAKE: attack_handshake_stop(); break;
+        case ATTACK_TYPE_PMKID:     attack_pmkid_stop(); break;
+        default: break;
+    }
+
+    ESP_LOGI(TAG, "Goal reached; attack stopped");
+    vTaskDelete(NULL);
+}
+
+void attack_signal_success(void)
+{
+    static volatile bool pending = false;
+    if (pending) return;
+    pending = true;
+    /* 4096 bytes is enough for the teardown path. */
+    if (xTaskCreate(success_stop_task, "atk_success", 4096, NULL, 5, NULL) != pdPASS) {
+        pending = false;
+        ESP_LOGE(TAG, "Failed to schedule success stop");
+    }
 }
 
 void attack_append_status_content(uint8_t *buffer, unsigned size){

@@ -49,6 +49,14 @@ static void eapolkey_frame_handler(void *args, esp_event_base_t event_base, int3
     attack_append_status_content(frame->payload, frame->rx_ctrl.sig_len);
     pcap_serializer_append_frame(frame->payload, frame->rx_ctrl.sig_len, frame->rx_ctrl.timestamp);
     hccapx_serializer_add_frame((data_frame_t *) frame->payload);
+
+    /* message_pair leaves 255 once a usable handshake is assembled, so the
+       capture can stop by itself instead of waiting out the timeout. */
+    hccapx_t *hccapx = hccapx_serializer_get();
+    if (hccapx != NULL && hccapx->message_pair != 255) {
+        ESP_LOGI(TAG, "Usable handshake captured (pair=%u)", hccapx->message_pair);
+        attack_signal_success();
+    }
 }
 
 void attack_handshake_start(attack_config_t *attack_config){

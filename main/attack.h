@@ -92,6 +92,15 @@ void attack_free_status_snapshot(attack_status_t *snapshot);
 void attack_update_status(attack_state_t state);
 
 /**
+ * @brief Report that the attack reached its goal and should stop now.
+ *
+ * Safe to call from an event handler: the actual teardown runs on a short
+ * deferred task so the caller's event loop is not unregistered from inside
+ * its own dispatch.
+ */
+void attack_signal_success(void);
+
+/**
  * @brief Initialises attack wrapper. This function should be callend only once.
  * 
  * This function creates all necessary resources for attack wrapper. It has to be called before any attack can be run.
