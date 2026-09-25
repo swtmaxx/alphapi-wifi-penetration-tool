@@ -21,12 +21,15 @@
 #include "nvs_flash.h"
 
 #include "attack.h"
+#include "debug_log.h"
 #include "screen_ui.h"
 #include "wifi_controller.h"
 #include "webserver.h"
 
 void app_main(void)
 {
+    debug_log_init();
+
     gpio_config_t bl = {
         .pin_bit_mask = 1ULL << 33,
         .mode = GPIO_MODE_OUTPUT,

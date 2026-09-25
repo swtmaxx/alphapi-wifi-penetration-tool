@@ -26,6 +26,7 @@
 #include "esp_wifi_types.h"
 
 #include "wifi_controller.h"
+#include "debug_log.h"
 #include "attack.h"
 #include "attack_handshake.h"
 #include "attack_dos.h"
@@ -573,6 +574,31 @@ static httpd_uri_t uri_count_clients_status_get = {
     .user_ctx = NULL
 };
 
+/**
+ * @brief Returns recent device logs captured since the last boot.
+ */
+static esp_err_t uri_logs_get_handler(httpd_req_t *req)
+{
+    char *buffer = malloc(DEBUG_LOG_EXPORT_MAX);
+    if (buffer == NULL) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "日志缓冲区不足");
+    }
+
+    size_t length = debug_log_read(buffer, DEBUG_LOG_EXPORT_MAX);
+    esp_err_t res = httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    if (res == ESP_OK) res = httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    if (res == ESP_OK) res = httpd_resp_send(req, buffer, length);
+    free(buffer);
+    return res;
+}
+
+static httpd_uri_t uri_logs_get = {
+    .uri = "/logs",
+    .method = HTTP_GET,
+    .handler = uri_logs_get_handler,
+    .user_ctx = NULL
+};
+
 void webserver_run(){
     ESP_LOGD(TAG, "Running webserver");
 
@@ -596,4 +622,5 @@ void webserver_run(){
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_pcap_delete_all_post));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_count_clients_post));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_count_clients_status_get));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_logs_get));
 }
