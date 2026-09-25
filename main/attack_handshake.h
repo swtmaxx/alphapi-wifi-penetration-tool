@@ -29,13 +29,13 @@ typedef enum{
  * 
  * @param attack_config attack config with valid ap_record and attack method chosen 
  */
-bool attack_handshake_start(attack_config_t *attack_config);
+void attack_handshake_start(attack_config_t *attack_config);
 
 /**
  * @brief Stops handshake attack.
  * 
  * This function stops everything that attack_handshake_start() started and resets all values to default state.
  */
-bool attack_handshake_stop(void);
+void attack_handshake_stop();
 
 #endif

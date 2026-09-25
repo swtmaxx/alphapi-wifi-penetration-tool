@@ -21,7 +21,6 @@
 #include "wifi_controller.h"
 #include "ap_scanner.h"
 #include "sniffer.h"
-#include "frame_analyzer_types.h"
 
 static const char *TAG = "client_counter";
 
@@ -38,8 +37,6 @@ typedef struct {
 
 static client_entry_t entries[CLIENT_COUNT_MAX_AP];
 static unsigned entry_count = 0;
-static uint8_t allowed_bssids[CLIENT_COUNT_MAX_AP][6];
-static unsigned allowed_count = 0;
 static SemaphoreHandle_t counter_mutex = NULL;
 static volatile bool counting_active = false;
 static bool handler_registered = false;
@@ -66,122 +63,65 @@ void wifictl_clear_client_counts(void)
  */
 static void client_frame_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
-    if (data == NULL || id != SNIFFER_EVENT_CAPTURED_DATA) return;
+    if (data == NULL) return;
 
     wifi_promiscuous_pkt_t *packet = (wifi_promiscuous_pkt_t *)data;
-    if (packet->rx_ctrl.sig_len < 24) return;
+    if (packet->rx_ctrl.sig_len < 22) return;
 
-    const data_frame_t *frame = (const data_frame_t *) packet->payload;
-    const frame_control_t *fc = &frame->mac_header.frame_control;
-    if (fc->type != 2 || (fc->to_ds && fc->from_ds)) return;
+    const uint8_t *frame = packet->payload;
+    const uint8_t *dst = &frame[4];
+    const uint8_t *src = &frame[10];
 
-    const uint8_t *bssid;
-    const uint8_t *client;
-    if (fc->to_ds) {
-        bssid = frame->mac_header.addr1;
-        client = frame->mac_header.addr2;
-    } else if (fc->from_ds) {
-        bssid = frame->mac_header.addr2;
-        client = frame->mac_header.addr1;
-    } else {
-        return;
-    }
-    if ((client[0] & 0x01) || memcmp(client, bssid, 6) == 0) return;
+    /* Frames the AP emits itself (beacon, probe response, ...) have
+       dst == src and must not be counted as clients. */
+    if (memcmp(dst, src, 6) == 0) return;
+    if (src[0] & 0x01) return; /* skip group/multicast sources */
 
     if (!ensure_mutex()) return;
     xSemaphoreTake(counter_mutex, portMAX_DELAY);
 
     int slot = -1;
     for (unsigned i = 0; i < entry_count; i++) {
-        if (memcmp(entries[i].bssid, bssid, 6) == 0) {
+        if (memcmp(entries[i].bssid, dst, 6) == 0) {
             slot = (int)i;
             break;
         }
     }
     if (slot < 0) {
-        bool allowed = false;
-        for (unsigned i = 0; i < allowed_count; i++) {
-            if (memcmp(allowed_bssids[i], bssid, 6) == 0) {
-                allowed = true;
-                break;
-            }
-        }
-        if (!allowed) {
-            xSemaphoreGive(counter_mutex);
-            return;
-        }
         if (entry_count >= CLIENT_COUNT_MAX_AP) {
             xSemaphoreGive(counter_mutex);
             return;
         }
         slot = (int)entry_count++;
-        memcpy(entries[slot].bssid, bssid, 6);
+        memcpy(entries[slot].bssid, dst, 6);
         entries[slot].count = 0;
     }
 
     for (unsigned i = 0; i < entries[slot].count; i++) {
-        if (memcmp(entries[slot].macs[i], client, 6) == 0) {
+        if (memcmp(entries[slot].macs[i], src, 6) == 0) {
             xSemaphoreGive(counter_mutex);
             return;
         }
     }
     if (entries[slot].count < CLIENT_COUNT_MAX_CLIENTS) {
-        memcpy(entries[slot].macs[entries[slot].count], client, 6);
+        memcpy(entries[slot].macs[entries[slot].count], src, 6);
         entries[slot].count++;
     }
     xSemaphoreGive(counter_mutex);
 }
 
-static void unregister_client_handler(void)
-{
-    if (!handler_registered) return;
-    esp_event_loop_handle_t loop = wifictl_sniffer_event_loop();
-    if (loop != NULL) {
-        esp_err_t err = esp_event_handler_unregister_with(
-            loop, SNIFFER_EVENTS, SNIFFER_EVENT_CAPTURED_DATA,
-            &client_frame_handler);
-        if (err != ESP_OK && err != ESP_ERR_NOT_FOUND) {
-            ESP_LOGW(TAG, "Failed to unregister client handler: %s", esp_err_to_name(err));
-        }
-    }
-    handler_registered = false;
-}
-
-static void finish_client_counting(bool restore_ap)
-{
-    if (wifictl_sniffer_is_active()) wifictl_sniffer_stop();
-    unregister_client_handler();
-    if (restore_ap) wifictl_mgmt_ap_restore();
-    counting_active = false;
-    wifictl_radio_release();
-}
-
 static void client_counting_task(void *arg)
 {
-    vTaskDelay(pdMS_TO_TICKS(500));
     wifictl_ap_records_t ap_records;
     if (!wifictl_copy_ap_records(&ap_records) || ap_records.count == 0) {
         ESP_LOGW(TAG, "No scanned APs; run a network scan first");
-        finish_client_counting(false);
+        counting_active = false;
         vTaskDelete(NULL);
         return;
     }
 
     wifictl_clear_client_counts();
-    if (!ensure_mutex()) {
-        finish_client_counting(false);
-        vTaskDelete(NULL);
-        return;
-    }
-    xSemaphoreTake(counter_mutex, portMAX_DELAY);
-    allowed_count = ap_records.count < CLIENT_COUNT_MAX_AP
-                        ? ap_records.count : CLIENT_COUNT_MAX_AP;
-    for (unsigned i = 0; i < allowed_count; i++) {
-        memcpy(allowed_bssids[i], ap_records.records[i].bssid, 6);
-    }
-    xSemaphoreGive(counter_mutex);
-
-    wifictl_sniffer_filter_frame_types(true, false, false);
+    wifictl_sniffer_filter_frame_types(true, true, false);
 
     bool channels[CLIENT_COUNT_MAX_CHANNEL + 1] = { false };
     for (unsigned i = 0; i < ap_records.count; i++) {
@@ -192,52 +132,50 @@ static void client_counting_task(void *arg)
     }
 
     ESP_LOGI(TAG, "Counting clients on scanned channels");
-    if (!wifictl_mgmt_ap_suspend()) {
-        ESP_LOGE(TAG, "Could not suspend management AP for channel sweep");
-        finish_client_counting(false);
-        vTaskDelete(NULL);
-        return;
-    }
     for (uint8_t channel = 1; channel <= CLIENT_COUNT_MAX_CHANNEL; channel++) {
         if (!channels[channel]) continue;
         ESP_LOGD(TAG, "Sniffing channel %u", channel);
         wifictl_sniffer_start(channel);
-        if (!wifictl_sniffer_is_active()) continue;
         vTaskDelay(pdMS_TO_TICKS(CLIENT_COUNT_DWELL_MS));
         wifictl_sniffer_stop();
     }
 
-    finish_client_counting(true);
+    if (handler_registered) {
+        esp_event_loop_handle_t loop = wifictl_sniffer_event_loop();
+        if (loop != NULL) {
+            esp_event_handler_unregister_with(loop, SNIFFER_EVENTS, ESP_EVENT_ANY_ID,
+                                              &client_frame_handler);
+        }
+        handler_registered = false;
+    }
+
+    /* Restore the management AP on its configured channel. */
+    wifictl_set_channel(CONFIG_MGMT_AP_CHANNEL);
+    wifictl_mgmt_ap_start();
+
     ESP_LOGI(TAG, "Client counting finished");
     counting_active = false;
     vTaskDelete(NULL);
 }
 
-bool wifictl_start_client_counting(void)
+void wifictl_start_client_counting(void)
 {
-    if (!ensure_mutex()) return false;
+    if (!ensure_mutex()) return;
     if (counting_active) {
         ESP_LOGW(TAG, "Client counting already running");
-        return false;
+        return;
     }
-    if (!wifictl_radio_try_acquire()) return false;
 
     if (!handler_registered) {
         /* The sniffer may not have run yet, so create its loop first. */
         if (!wifictl_sniffer_loop_ready()) {
             ESP_LOGE(TAG, "Sniffer loop not ready; cannot count clients");
-            wifictl_radio_release();
-            return false;
+            counting_active = false;
+            return;
         }
         esp_event_loop_handle_t loop = wifictl_sniffer_event_loop();
-        esp_err_t err = esp_event_handler_register_with(
-            loop, SNIFFER_EVENTS, SNIFFER_EVENT_CAPTURED_DATA,
-            &client_frame_handler, NULL);
-        if (err != ESP_OK) {
-            wifictl_radio_release();
-            ESP_LOGE(TAG, "Failed to register client handler: %s", esp_err_to_name(err));
-            return false;
-        }
+        esp_event_handler_register_with(loop, SNIFFER_EVENTS, ESP_EVENT_ANY_ID,
+                                        &client_frame_handler, NULL);
         handler_registered = true;
     }
 
@@ -245,11 +183,7 @@ bool wifictl_start_client_counting(void)
     if (xTaskCreate(client_counting_task, "count_clients", 4096, NULL, 5, NULL) != pdPASS) {
         ESP_LOGE(TAG, "Failed to start client counting task");
         counting_active = false;
-        unregister_client_handler();
-        wifictl_radio_release();
-        return false;
     }
-    return true;
 }
 
 bool wifictl_client_counting_active(void)

@@ -29,13 +29,13 @@ typedef enum{
  * 
  * @param attack_config attack config with valid ap_record and attack method chosen 
  */
-bool attack_dos_start(attack_config_t *attack_config);
+void attack_dos_start(attack_config_t *attack_config);
 
 /**
  * @brief Stops DoS attack.
  * 
  * This function stops everything that attack_dos_start() started and resets all values to default state.
  */
-bool attack_dos_stop(void);
+void attack_dos_stop();
 
 #endif

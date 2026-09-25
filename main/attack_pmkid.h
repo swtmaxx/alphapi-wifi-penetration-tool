@@ -18,12 +18,12 @@
  * 
  * @param attack_config attack configuration with valid ap_record
  */
-bool attack_pmkid_start(attack_config_t *attack_config);
+void attack_pmkid_start(attack_config_t *attack_config);
 /**
  * @brief Stops PMKID attack.
  * 
  * It stops everything that attack_pmkid_start() started and resets values to original state.
  */
-bool attack_pmkid_stop(void);
+void attack_pmkid_stop();
 
 #endif

@@ -9,8 +9,6 @@
 #include "hccapx_serializer.h"
 
 #include <stdint.h>
-#include <stdbool.h>
-#include <stddef.h>
 #include <string.h>
 // Include library of ntohs function
 #include <arpa/inet.h>
@@ -58,12 +56,6 @@ static unsigned message_sta = 0;
  * @brief Stores number of message from which was the EAPoL packet saved.  
  */
 static unsigned eapol_source = 0;
-static uint8_t replay_m1[8];
-static uint8_t replay_m2[8];
-static uint8_t replay_m3[8];
-static bool have_replay_m1 = false;
-static bool have_replay_m2 = false;
-static bool have_replay_m3 = false;
 
 /**
  * @brief Says whether array contains only zero values or not
@@ -82,17 +74,6 @@ static bool is_array_zero(uint8_t *array, unsigned size){
     return true;
 }
 
-static bool replay_counter_is_next(const uint8_t previous[8], const uint8_t current[8])
-{
-    uint8_t expected[8];
-    memcpy(expected, previous, sizeof(expected));
-    for (int i = 7; i >= 0; i--) {
-        expected[i]++;
-        if (expected[i] != 0) break;
-    }
-    return memcmp(expected, current, sizeof(expected)) == 0;
-}
-
 void hccapx_serializer_init(const uint8_t *ssid, unsigned size){
     /* Reset the whole handshake state, not just message_pair.
      *
@@ -104,12 +85,6 @@ void hccapx_serializer_init(const uint8_t *ssid, unsigned size){
     message_ap = 0;
     message_sta = 0;
     eapol_source = 0;
-    memset(replay_m1, 0, sizeof(replay_m1));
-    memset(replay_m2, 0, sizeof(replay_m2));
-    memset(replay_m3, 0, sizeof(replay_m3));
-    have_replay_m1 = false;
-    have_replay_m2 = false;
-    have_replay_m3 = false;
 
     memset(hccapx.keymic, 0, sizeof(hccapx.keymic));
     memset(hccapx.mac_ap, 0, sizeof(hccapx.mac_ap));
@@ -118,21 +93,15 @@ void hccapx_serializer_init(const uint8_t *ssid, unsigned size){
     memset(hccapx.nonce_sta, 0, sizeof(hccapx.nonce_sta));
     memset(hccapx.eapol, 0, sizeof(hccapx.eapol));
     hccapx.eapol_len = 0;
-    hccapx.keyver = HCCAPX_KEYVER_WPA2;
 
     if (size > sizeof(hccapx.essid)) size = sizeof(hccapx.essid);
     hccapx.essid_len = size;
-    if (ssid != NULL && size > 0) memcpy(hccapx.essid, ssid, size);
+    memcpy(hccapx.essid, ssid, size);
     hccapx.message_pair = 255;
 }
 
 hccapx_t *hccapx_serializer_get(){
-    if (hccapx.message_pair == 255 || hccapx.eapol_len == 0 ||
-        is_array_zero(hccapx.mac_ap, sizeof(hccapx.mac_ap)) ||
-        is_array_zero(hccapx.mac_sta, sizeof(hccapx.mac_sta)) ||
-        is_array_zero(hccapx.nonce_ap, sizeof(hccapx.nonce_ap)) ||
-        is_array_zero(hccapx.nonce_sta, sizeof(hccapx.nonce_sta)) ||
-        is_array_zero(hccapx.keymic, sizeof(hccapx.keymic))) {
+    if(hccapx.message_pair == 255){
         return NULL;
     }
     
@@ -158,8 +127,6 @@ static unsigned save_eapol(eapol_packet_t *eapol_packet, eapol_key_packet_t *eap
         return 1;
     }
     hccapx.eapol_len = eapol_len;
-    hccapx.keyver = eapol_key_packet->key_information.key_descriptor_version == 1
-                        ? HCCAPX_KEYVER_WPA : HCCAPX_KEYVER_WPA2;
     memcpy(hccapx.eapol, eapol_packet, hccapx.eapol_len);
     memcpy(hccapx.keymic, eapol_key_packet->key_mic, 16);
     // Clear key MIC from EAPoL packet so hashcat can calulate MIC without preprocessing.
@@ -181,8 +148,6 @@ static void ap_message_m1(eapol_key_packet_t *eapol_key_packet){
     ESP_LOGD(TAG, "From AP M1");
     message_ap = 1;
     memcpy(hccapx.nonce_ap, eapol_key_packet->key_nonce, 32);
-    memcpy(replay_m1, eapol_key_packet->key_replay_counter, sizeof(replay_m1));
-    have_replay_m1 = true;
 }
 
 /**
@@ -193,23 +158,11 @@ static void ap_message_m1(eapol_key_packet_t *eapol_key_packet){
  */
 static void ap_message_m3(eapol_packet_t* eapol_packet, eapol_key_packet_t *eapol_key_packet){
     ESP_LOGD(TAG, "From AP M3");
-    if (message_ap == 1 &&
-        (memcmp(hccapx.nonce_ap, eapol_key_packet->key_nonce, 32) != 0 ||
-         !replay_counter_is_next(replay_m1, eapol_key_packet->key_replay_counter))) {
-        ESP_LOGD(TAG, "M3 does not match the recorded M1");
-        return;
-    }
-    if (have_replay_m2 &&
-        !replay_counter_is_next(replay_m2, eapol_key_packet->key_replay_counter)) {
-        ESP_LOGD(TAG, "M3 replay counter does not follow M2");
-        return;
-    }
-    if (message_ap == 0) {
+    message_ap = 3;
+    if(message_ap == 0){
+        // No AP message was processed yet. ANonce has to be copied into HCCAPX buffer.
         memcpy(hccapx.nonce_ap, eapol_key_packet->key_nonce, 32);
     }
-    memcpy(replay_m3, eapol_key_packet->key_replay_counter, sizeof(replay_m3));
-    have_replay_m3 = true;
-    message_ap = 3;
     if(eapol_source == 2){
         // EAPoL packet was already saved from message #2. No need to resave it.
         hccapx.message_pair = 2;
@@ -232,18 +185,12 @@ static void ap_message_m3(eapol_packet_t* eapol_packet, eapol_key_packet_t *eapo
  * @param eapol_key_packet 
  */
 static void ap_message(data_frame_t *frame, eapol_packet_t* eapol_packet, eapol_key_packet_t *eapol_key_packet){
-    if ((!is_array_zero(hccapx.mac_ap, 6) &&
-         memcmp(frame->mac_header.addr2, hccapx.mac_ap, 6) != 0) ||
-        (!is_array_zero(hccapx.mac_sta, 6) &&
-         memcmp(frame->mac_header.addr1, hccapx.mac_sta, 6) != 0)) {
+    if((!is_array_zero(hccapx.mac_sta, 6)) && (memcmp(frame->mac_header.addr1, hccapx.mac_sta, 6) != 0)){
         ESP_LOGE(TAG, "Different STA");
         return;
     }
-    if (is_array_zero(hccapx.mac_ap, 6)) {
+    if(message_ap == 0){
         memcpy(hccapx.mac_ap, frame->mac_header.addr2, 6);
-    }
-    if (is_array_zero(hccapx.mac_sta, 6)) {
-        memcpy(hccapx.mac_sta, frame->mac_header.addr1, 6);
     }
     // Determine which message this is by Key MIC
     // Key MIC is always empty in M1 and always present in M3
@@ -267,26 +214,14 @@ static void ap_message(data_frame_t *frame, eapol_packet_t* eapol_packet, eapol_
  */
 static void sta_message_m2(eapol_packet_t* eapol_packet, eapol_key_packet_t *eapol_key_packet){
     ESP_LOGD(TAG, "From STA M2");
-    if (have_replay_m1 &&
-        memcmp(replay_m1, eapol_key_packet->key_replay_counter, sizeof(replay_m1)) != 0) {
-        ESP_LOGD(TAG, "M2 replay counter does not match M1");
-        return;
-    }
-    if (have_replay_m3 &&
-        !replay_counter_is_next(eapol_key_packet->key_replay_counter, replay_m3)) {
-        ESP_LOGD(TAG, "M2 replay counter does not precede M3");
-        return;
-    }
+    message_sta = 2;
     memcpy(hccapx.nonce_sta, eapol_key_packet->key_nonce, 32);
     if(save_eapol(eapol_packet, eapol_key_packet) != 0){
         return;
     }
-    memcpy(replay_m2, eapol_key_packet->key_replay_counter, sizeof(replay_m2));
-    have_replay_m2 = true;
-    message_sta = 2;
     eapol_source = 2;
-    if (message_ap == 1 || message_ap == 3) {
-        hccapx.message_pair = message_ap == 1 ? 0 : 2;
+    if(message_ap == 1){
+        hccapx.message_pair = 0;
         return;
     }
 }
@@ -308,13 +243,6 @@ static void sta_message_m4(eapol_packet_t* eapol_packet, eapol_key_packet_t *eap
     if(message_ap == 0){
         // If there was no AP message processed yet, ANonce will be always missing.
         ESP_LOGE(TAG, "Not enought handshake messages received.");
-        return;
-    }
-    if ((have_replay_m3 &&
-         memcmp(replay_m3, eapol_key_packet->key_replay_counter, sizeof(replay_m3)) != 0) ||
-        (!have_replay_m3 && have_replay_m1 &&
-         !replay_counter_is_next(replay_m1, eapol_key_packet->key_replay_counter))) {
-        ESP_LOGD(TAG, "M4 replay counter does not match the AP exchange");
         return;
     }
     if(eapol_source == 3){
@@ -341,23 +269,17 @@ static void sta_message_m4(eapol_packet_t* eapol_packet, eapol_key_packet_t *eap
  * @param eapol_key_packet 
  */
 static void sta_message(data_frame_t *frame, eapol_packet_t* eapol_packet, eapol_key_packet_t *eapol_key_packet){
-    if ((!is_array_zero(hccapx.mac_ap, 6) &&
-         memcmp(frame->mac_header.addr1, hccapx.mac_ap, 6) != 0) ||
-        (!is_array_zero(hccapx.mac_sta, 6) &&
-         memcmp(frame->mac_header.addr2, hccapx.mac_sta, 6) != 0)) {
-        ESP_LOGD(TAG, "Frame does not match the recorded AP/STA pair");
-        return;
-    }
-    if (is_array_zero(hccapx.mac_ap, 6)) {
-        memcpy(hccapx.mac_ap, frame->mac_header.addr1, 6);
-    }
     if(is_array_zero(hccapx.mac_sta, 6)){
         memcpy(hccapx.mac_sta, frame->mac_header.addr2, 6);
+    }
+    else if(memcmp(frame->mac_header.addr2, hccapx.mac_sta, 6) != 0){
+        ESP_LOGE(TAG, "Different STA");
+        return;
     }
     // Determine which message this is by SNonce
     // SNonce is present in M2, empty in M4
     // Ref: 802.11i-2004 [8.5.3]
-    if(!is_array_zero(eapol_key_packet->key_nonce, 32)){
+    if(!is_array_zero(eapol_key_packet->key_nonce, 16)){
         sta_message_m2(eapol_packet, eapol_key_packet);
     } 
     else {
@@ -378,19 +300,17 @@ static void sta_message(data_frame_t *frame, eapol_packet_t* eapol_packet, eapol
  * 
  * @param frame 
  */
-void hccapx_serializer_add_frame(data_frame_t *frame, size_t frame_len){
-    if (frame == NULL || frame_len < offsetof(data_frame_t, body)) return;
-    size_t eapol_len = 0;
-    eapol_packet_t *eapol_packet = parse_eapol_packet(frame, frame_len, &eapol_len);
-    if (eapol_packet == NULL) return;
-    eapol_key_packet_t *eapol_key_packet = parse_eapol_key_packet(
-        eapol_packet, eapol_len, NULL);
-    if (eapol_key_packet == NULL) return;
-
-    frame_control_t *fc = &frame->mac_header.frame_control;
-    if (fc->to_ds && !fc->from_ds) {
-        sta_message(frame, eapol_packet, eapol_key_packet);
-    } else if (fc->from_ds && !fc->to_ds) {
+void hccapx_serializer_add_frame(data_frame_t *frame){
+    eapol_packet_t *eapol_packet = parse_eapol_packet(frame);
+    eapol_key_packet_t *eapol_key_packet = parse_eapol_key_packet(eapol_packet);
+    // Determine direction of the frame by comparing BSSID (addr3) with source address (addr2)
+    if(memcmp(frame->mac_header.addr2, frame->mac_header.addr3, 6) == 0){
         ap_message(frame, eapol_packet, eapol_key_packet);
+    } 
+    else if(memcmp(frame->mac_header.addr1, frame->mac_header.addr3, 6) == 0){
+        sta_message(frame, eapol_packet, eapol_key_packet);
+    } 
+    else {
+        ESP_LOGE(TAG, "Unknown frame format. BSSID is not source nor destionation.");
     }
 }

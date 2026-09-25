@@ -9,7 +9,6 @@
 #ifndef FRAME_ANALYZER_H
 #define FRAME_ANALYZER_H
 
-#include <stdbool.h>
 #include "esp_event.h"
 
 ESP_EVENT_DECLARE_BASE(FRAME_ANALYZER_EVENTS);
@@ -35,7 +34,7 @@ typedef enum {
  * @param search_type type of information that are demanded
  * @param bssid target AP's BSSID
  */
-bool frame_analyzer_capture_start(search_type_t search_type, const uint8_t *bssid);
+void frame_analyzer_capture_start(search_type_t search_type, const uint8_t *bssid);
 
 /**
  * @brief stops frame analysis

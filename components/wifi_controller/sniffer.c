@@ -119,33 +119,21 @@ void wifictl_sniffer_filter_frame_types(bool data, bool mgmt, bool ctrl) {
     esp_wifi_set_promiscuous_filter(&filter);
 }
 
-bool wifictl_sniffer_start(uint8_t channel) {
+void wifictl_sniffer_start(uint8_t channel) {
     ESP_LOGI(TAG, "Starting promiscuous mode...");
-    if (channel == 0 || channel > 13) {
-        ESP_LOGE(TAG, "Invalid sniffer channel %u", channel);
-        return false;
-    }
     if (!ensure_sniffer_loop()) {
-        ESP_LOGE(TAG, "Sniffer event loop unavailable");
-        return false;
+        ESP_LOGE(TAG, "Sniffer event loop unavailable; frames will be dropped");
     }
-    esp_err_t err = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    // ESP32 cannot switch port, if there is some STA connected to AP
+    ESP_LOGD(TAG, "Kicking all connected STAs from AP");
+    esp_err_t err = esp_wifi_deauth_sta(0);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to set sniffer channel %u: %s", channel, esp_err_to_name(err));
-        return false;
+        ESP_LOGW(TAG, "Failed to deauth connected STAs: %s", esp_err_to_name(err));
     }
-    err = esp_wifi_set_promiscuous_rx_cb(&frame_handler);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to set sniffer callback: %s", esp_err_to_name(err));
-        return false;
-    }
-    err = esp_wifi_set_promiscuous(true);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to enable promiscuous mode: %s", esp_err_to_name(err));
-        return false;
-    }
+    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    esp_wifi_set_promiscuous(true);
+    esp_wifi_set_promiscuous_rx_cb(&frame_handler);
     sniffer_active = true;
-    return true;
 }
 
 bool wifictl_sniffer_is_active(void)

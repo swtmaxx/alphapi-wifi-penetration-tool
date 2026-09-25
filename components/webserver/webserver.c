@@ -28,8 +28,6 @@
 #include "wifi_controller.h"
 #include "debug_log.h"
 #include "attack.h"
-#include "attack_handshake.h"
-#include "attack_dos.h"
 #include "pcap_serializer.h"
 #include "hccapx_serializer.h"
 
@@ -70,11 +68,7 @@ static httpd_uri_t uri_root_get = {
  * @{
  */
 static esp_err_t uri_reset_head_handler(httpd_req_t *req) {
-    esp_err_t err = esp_event_post(WEBSERVER_EVENTS, WEBSERVER_EVENT_ATTACK_RESET,
-                                   NULL, 0, pdMS_TO_TICKS(100));
-    if (err != ESP_OK) {
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "设备正忙，请稍后重试");
-    }
+    ESP_ERROR_CHECK(esp_event_post(WEBSERVER_EVENTS, WEBSERVER_EVENT_ATTACK_RESET, NULL, 0, portMAX_DELAY));
     return httpd_resp_send(req, NULL, 0);
 }
 
@@ -113,17 +107,16 @@ static esp_err_t uri_ap_list_get_handler(httpd_req_t *req) {
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "无法读取扫描结果");
     }
 
-    // 33 SSID + 6 BSSID + 1 RSSI. Client counts are intentionally omitted.
-    char resp_chunk[40];
+    // 33 SSID + 6 BSSID + 1 RSSI + 1 client count
+    char resp_chunk[41];
 
-    esp_err_t res = httpd_resp_set_type(req, HTTPD_TYPE_OCTET);
-    if (res != ESP_OK) return res;
+    ESP_ERROR_CHECK(httpd_resp_set_type(req, HTTPD_TYPE_OCTET));
     for (unsigned i = 0; i < ap_records.count; i++) {
         memcpy(resp_chunk, ap_records.records[i].ssid, 33);
         memcpy(&resp_chunk[33], ap_records.records[i].bssid, 6);
         memcpy(&resp_chunk[39], &ap_records.records[i].rssi, 1);
-        res = httpd_resp_send_chunk(req, resp_chunk, sizeof(resp_chunk));
-        if (res != ESP_OK) return res;
+        resp_chunk[40] = (char) wifictl_get_client_count(ap_records.records[i].bssid);
+        ESP_ERROR_CHECK(httpd_resp_send_chunk(req, resp_chunk, 41));
     }
     return httpd_resp_send_chunk(req, NULL, 0);
 }
@@ -145,40 +138,11 @@ static httpd_uri_t uri_ap_list_get = {
  * @{
  */
 static esp_err_t uri_run_attack_post_handler(httpd_req_t *req) {
-    if (req->content_len != sizeof(attack_request_t)) {
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "攻击参数长度无效");
-    }
-
     attack_request_t attack_request;
-    size_t received = 0;
-    while (received < sizeof(attack_request)) {
-        int result = httpd_req_recv(req, (char *)&attack_request + received,
-                                    sizeof(attack_request) - received);
-        if (result <= 0) {
-            return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "未能读取完整攻击参数");
-        }
-        received += (size_t)result;
-    }
-
-    bool valid_type = attack_request.type >= ATTACK_TYPE_HANDSHAKE &&
-                      attack_request.type <= ATTACK_TYPE_DOS;
-    bool valid_method = (attack_request.type == ATTACK_TYPE_HANDSHAKE &&
-                         attack_request.method <= ATTACK_HANDSHAKE_METHOD_PASSIVE) ||
-                        (attack_request.type == ATTACK_TYPE_PMKID &&
-                         attack_request.method == 0) ||
-                        (attack_request.type == ATTACK_TYPE_DOS &&
-                         attack_request.method <= ATTACK_DOS_METHOD_COMBINE_ALL);
-    if (!valid_type || !valid_method) {
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "攻击类型或方式无效");
-    }
-
-    esp_err_t err = esp_event_post(WEBSERVER_EVENTS, WEBSERVER_EVENT_ATTACK_REQUEST,
-                                   &attack_request, sizeof(attack_request),
-                                   pdMS_TO_TICKS(100));
-    if (err != ESP_OK) {
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "设备正忙，请稍后重试");
-    }
-    return httpd_resp_send(req, NULL, 0);
+    httpd_req_recv(req, (char *)&attack_request, sizeof(attack_request_t));
+    esp_err_t res = httpd_resp_send(req, NULL, 0);
+    ESP_ERROR_CHECK(esp_event_post(WEBSERVER_EVENTS, WEBSERVER_EVENT_ATTACK_REQUEST, &attack_request, sizeof(attack_request_t), portMAX_DELAY));
+    return res;
 }
 
 static httpd_uri_t uri_run_attack_post = {
@@ -204,23 +168,15 @@ static esp_err_t uri_status_get_handler(httpd_req_t *req) {
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "status unavailable");
     }
 
-    uint8_t header[4] = {
-        attack_status.state,
-        attack_status.type,
-        (uint8_t)(attack_status.content_size & 0xff),
-        (uint8_t)(attack_status.content_size >> 8)
-    };
     esp_err_t res = httpd_resp_set_type(req, HTTPD_TYPE_OCTET);
     if (res != ESP_OK) {
         attack_free_status_snapshot(&attack_status);
         return res;
     }
-    res = httpd_resp_send_chunk(req, (const char *)header, sizeof(header));
+    // first send attack result header
+    res = httpd_resp_send_chunk(req, (char *) &attack_status, 4);
     // send attack result content
-    if(res == ESP_OK && (attack_status.state == FINISHED ||
-                         attack_status.state == TIMEOUT ||
-                         attack_status.state == ERROR) &&
-       attack_status.content_size > 0){
+    if(res == ESP_OK && ((attack_status.state == FINISHED) || (attack_status.state == TIMEOUT)) && (attack_status.content_size > 0)){
         res = httpd_resp_send_chunk(req, attack_status.content, attack_status.content_size);
     }
     if (res == ESP_OK) res = httpd_resp_send_chunk(req, NULL, 0);
@@ -248,13 +204,12 @@ static httpd_uri_t uri_status_get = {
  */
 static esp_err_t uri_capture_pcap_get_handler(httpd_req_t *req){
     ESP_LOGD(TAG, "Providing PCAP file...");
-    esp_err_t res = httpd_resp_set_type(req, HTTPD_TYPE_OCTET);
-    if (res != ESP_OK) return res;
+    httpd_resp_set_type(req, HTTPD_TYPE_OCTET);
 
     unsigned total = pcap_serializer_get_size();
     uint8_t chunk[2048];
     unsigned offset = 0;
-    res = ESP_OK;
+    esp_err_t res = ESP_OK;
     while (offset < total) {
         unsigned len = (total - offset) > sizeof(chunk) ? sizeof(chunk) : (total - offset);
         if (!pcap_serializer_read(offset, chunk, len)) {
@@ -289,8 +244,7 @@ static httpd_uri_t uri_capture_pcap_get = {
  */
 static esp_err_t uri_capture_hccapx_get_handler(httpd_req_t *req){
     ESP_LOGD(TAG, "Providing HCCAPX file...");
-    esp_err_t res = httpd_resp_set_type(req, HTTPD_TYPE_OCTET);
-    if (res != ESP_OK) return res;
+    ESP_ERROR_CHECK(httpd_resp_set_type(req, HTTPD_TYPE_OCTET));
     return httpd_resp_send(req, (char *) hccapx_serializer_get(), sizeof(hccapx_t));
 }
 
@@ -305,110 +259,27 @@ static httpd_uri_t uri_capture_hccapx_get = {
 /**
  * @brief Handlers for \c /pcap-list endpoint
  *
- * Returns one bounded page of stored files and the total count.
+ * Returns a JSON array describing every stored capture file so the UI can
+ * offer per-file and bulk download.
  * @param req
  * @return esp_err_t
  * @{
  */
-static bool parse_optional_uint(const char *query, const char *key,
-                                unsigned default_value, unsigned max_value,
-                                unsigned *out)
-{
-    char value[16];
-    esp_err_t err = httpd_query_key_value(query, key, value, sizeof(value));
-    if (err == ESP_ERR_NOT_FOUND) {
-        *out = default_value;
-        return true;
-    }
-    if (err != ESP_OK || value[0] == '\0') return false;
+static esp_err_t uri_pcap_list_get_handler(httpd_req_t *req) {
+    static pcap_file_info_t files[PCAP_LIST_MAX * 2];
+    /* captures plus PMKID text results */
+    unsigned count = pcap_serializer_list(files, PCAP_LIST_MAX);
+    count += pcap_serializer_list_text(files + count, PCAP_LIST_MAX);
 
-    unsigned parsed = 0;
-    for (const char *p = value; *p != '\0'; p++) {
-        if (*p < '0' || *p > '9') return false;
-        unsigned digit = (unsigned)(*p - '0');
-        if (parsed > (max_value - digit) / 10) return false;
-        parsed = parsed * 10 + digit;
+    httpd_resp_set_type(req, "application/json; charset=utf-8");
+    esp_err_t res = httpd_resp_send_chunk(req, "[", 1);
+    for (unsigned i = 0; i < count && res == ESP_OK; i++) {
+        char chunk[96];
+        int len = snprintf(chunk, sizeof(chunk), "%s{\"name\":\"%s\",\"size\":%u}",
+                           i == 0 ? "" : ",", files[i].name, files[i].size);
+        res = httpd_resp_send_chunk(req, chunk, len);
     }
-    if (parsed > max_value) return false;
-    *out = parsed;
-    return true;
-}
-
-static bool safe_stored_name(const char *name)
-{
-    for (const unsigned char *p = (const unsigned char *)name; *p != '\0'; p++) {
-        if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
-              (*p >= '0' && *p <= '9') || *p == '_' || *p == '-' || *p == '.')) {
-            return false;
-        }
-    }
-    return true;
-}
-
-static esp_err_t send_json_name(httpd_req_t *req, const char *name)
-{
-    char escaped[PCAP_FILENAME_MAX * 6 + 1];
-    size_t used = 0;
-    static const char hex[] = "0123456789abcdef";
-    for (const unsigned char *p = (const unsigned char *)name; *p != '\0'; p++) {
-        if (*p == '"' || *p == '\\') {
-            escaped[used++] = '\\';
-            escaped[used++] = (char)*p;
-        } else if (*p < 0x20) {
-            escaped[used++] = '\\';
-            escaped[used++] = 'u';
-            escaped[used++] = '0';
-            escaped[used++] = '0';
-            escaped[used++] = hex[*p >> 4];
-            escaped[used++] = hex[*p & 0x0f];
-        } else {
-            escaped[used++] = (char)*p;
-        }
-    }
-    return httpd_resp_send_chunk(req, escaped, used);
-}
-
-static esp_err_t uri_pcap_list_get_handler(httpd_req_t *req)
-{
-    char query[96] = "";
-    unsigned offset = 0;
-    unsigned limit = 16;
-    int query_result = httpd_req_get_url_query_str(req, query, sizeof(query));
-    if (query_result != ESP_OK && query_result != ESP_ERR_NOT_FOUND) {
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "分页参数过长");
-    }
-    if (!parse_optional_uint(query, "offset", 0, 1000000, &offset) ||
-        !parse_optional_uint(query, "limit", 16, PCAP_LIST_MAX, &limit) ||
-        limit == 0) {
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "分页参数无效");
-    }
-
-    static pcap_file_info_t files[PCAP_LIST_MAX];
-    unsigned total = 0;
-    if (!pcap_serializer_list_page(files, limit, offset, &total)) {
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "无法读取文件列表");
-    }
-
-    esp_err_t res = httpd_resp_set_type(req, "application/json; charset=utf-8");
-    if (res != ESP_OK) return res;
-    char head[96];
-    int head_len = snprintf(head, sizeof(head),
-                            "{\"total\":%u,\"offset\":%u,\"limit\":%u,\"files\":[",
-                            total, offset, limit);
-    res = httpd_resp_send_chunk(req, head, head_len);
-    for (unsigned i = 0; i < limit && offset + i < total && res == ESP_OK; i++) {
-        char prefix[16];
-        int prefix_len = snprintf(prefix, sizeof(prefix), "%s{\"name\":\"",
-                                  i == 0 ? "" : ",");
-        res = httpd_resp_send_chunk(req, prefix, prefix_len);
-        if (res == ESP_OK) res = send_json_name(req, files[i].name);
-        if (res == ESP_OK) {
-            char suffix[32];
-            int suffix_len = snprintf(suffix, sizeof(suffix), "\",\"size\":%u}", files[i].size);
-            res = httpd_resp_send_chunk(req, suffix, suffix_len);
-        }
-    }
-    if (res == ESP_OK) res = httpd_resp_send_chunk(req, "]}", 2);
+    if (res == ESP_OK) res = httpd_resp_send_chunk(req, "]", 1);
     if (res == ESP_OK) res = httpd_resp_send_chunk(req, NULL, 0);
     return res;
 }
@@ -430,30 +301,38 @@ static httpd_uri_t uri_pcap_list_get = {
  * @{
  */
 static esp_err_t uri_capture_file_get_handler(httpd_req_t *req) {
-    char query[128];
-    char name[PCAP_FILENAME_MAX] = {0};
+    char query[96];
+    char name[40] = {0};
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
         httpd_query_key_value(query, "name", name, sizeof(name)) != ESP_OK) {
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "缺少文件参数");
     }
 
     /* Resolve the stored size first so the final partial chunk is not lost. */
-    pcap_file_info_t info;
-    if (!safe_stored_name(name) || !pcap_serializer_get_file_info(name, &info)) {
+    static pcap_file_info_t files[PCAP_LIST_MAX * 2];
+    unsigned count = pcap_serializer_list(files, PCAP_LIST_MAX);
+    count += pcap_serializer_list_text(files + count, PCAP_LIST_MAX);
+    unsigned total = 0;
+    bool found = false;
+    for (unsigned i = 0; i < count; i++) {
+        if (strcmp(files[i].name, name) == 0) {
+            total = files[i].size;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
         return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "文件不存在");
     }
-    unsigned total = info.size;
 
-    esp_err_t res = httpd_resp_set_type(req, HTTPD_TYPE_OCTET);
-    if (res != ESP_OK) return res;
-    char disposition[PCAP_FILENAME_MAX + 32];
+    httpd_resp_set_type(req, HTTPD_TYPE_OCTET);
+    char disposition[64];
     snprintf(disposition, sizeof(disposition), "attachment; filename=\"%s\"", name);
-    res = httpd_resp_set_hdr(req, "Content-Disposition", disposition);
-    if (res != ESP_OK) return res;
+    httpd_resp_set_hdr(req, "Content-Disposition", disposition);
 
     uint8_t chunk[2048];
     unsigned offset = 0;
-    res = ESP_OK;
+    esp_err_t res = ESP_OK;
     while (offset < total && res == ESP_OK) {
         unsigned len = (total - offset) > sizeof(chunk) ? sizeof(chunk) : (total - offset);
         if (!pcap_serializer_read_file(name, offset, chunk, len)) {
@@ -461,7 +340,7 @@ static esp_err_t uri_capture_file_get_handler(httpd_req_t *req) {
             break;
         }
         res = httpd_resp_send_chunk(req, (const char *)chunk, len);
-        if (res == ESP_OK) offset += len;
+        offset += len;
     }
     if (res == ESP_OK) res = httpd_resp_send_chunk(req, NULL, 0);
     return res;
@@ -484,14 +363,14 @@ static httpd_uri_t uri_capture_file_get = {
  * @{
  */
 static esp_err_t uri_pcap_delete_post_handler(httpd_req_t *req) {
-    char query[128];
-    char name[PCAP_FILENAME_MAX] = {0};
+    char query[96];
+    char name[40] = {0};
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
         httpd_query_key_value(query, "name", name, sizeof(name)) != ESP_OK) {
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "缺少文件参数");
     }
 
-    if (!safe_stored_name(name) || !pcap_serializer_delete(name)) {
+    if (!pcap_serializer_delete(name)) {
         return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "删除失败或文件不存在");
     }
     return httpd_resp_sendstr(req, "OK");
@@ -514,9 +393,13 @@ static httpd_uri_t uri_pcap_delete_post = {
  * @{
  */
 static esp_err_t uri_pcap_delete_all_post_handler(httpd_req_t *req) {
+    static pcap_file_info_t files[PCAP_LIST_MAX * 2];
+    unsigned count = pcap_serializer_list(files, PCAP_LIST_MAX);
+    count += pcap_serializer_list_text(files + count, PCAP_LIST_MAX);
+
     unsigned removed = 0;
-    if (!pcap_serializer_delete_all(&removed)) {
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "删除文件失败");
+    for (unsigned i = 0; i < count; i++) {
+        if (pcap_serializer_delete(files[i].name)) removed++;
     }
 
     char body[48];
@@ -541,12 +424,8 @@ static httpd_uri_t uri_pcap_delete_all_post = {
  * @{
  */
 static esp_err_t uri_count_clients_post_handler(httpd_req_t *req) {
-    if (!wifictl_start_client_counting()) {
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "客户端探测无法启动或正在运行");
-    }
-    esp_err_t res = httpd_resp_set_type(req, "application/json; charset=utf-8");
-    if (res != ESP_OK) return res;
-    return httpd_resp_sendstr(req, "{\"active\":true}");
+    wifictl_start_client_counting();
+    return httpd_resp_send(req, NULL, 0);
 }
 
 static httpd_uri_t uri_count_clients_post = {

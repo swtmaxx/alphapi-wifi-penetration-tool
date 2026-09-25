@@ -66,7 +66,7 @@ typedef struct {
     uint8_t atk_timeout_index;
     uint8_t atk_timeout_seconds;
     uint8_t capture_index;
-    /* 0 = delete this file, 1 = delete all stored files */
+    /* 0 = ask, 1 = delete just this file, 2 = wipe everything */
     uint8_t capture_delete_choice;
     scan_state_t scan_state;
     esp_err_t scan_error;
@@ -82,9 +82,9 @@ static const char *main_menu_items[] = {
 #define MAIN_MENU_COUNT 3
 
 static const char *attack_type_names[] = {
-    "握手", "PMKID", "拒绝服务"
+    "被动", "握手", "PMKID", "拒绝服务"
 };
-#define ATTACK_TYPE_COUNT 3
+#define ATTACK_TYPE_COUNT 4
 
 static const char *handshake_method_names[] = {
     "诱骗 AP", "广播去认证", "仅抓包"
@@ -107,49 +107,8 @@ static const char *attack_state_name(uint8_t state)
         case RUNNING: return "运行中";
         case FINISHED: return "完成";
         case TIMEOUT: return "超时";
-        case ERROR: return "失败";
         default: return "未知";
     }
-}
-
-static const char *attack_type_name(uint8_t type)
-{
-    switch (type) {
-        case ATTACK_TYPE_HANDSHAKE: return attack_type_names[0];
-        case ATTACK_TYPE_PMKID: return attack_type_names[1];
-        case ATTACK_TYPE_DOS: return attack_type_names[2];
-        default: return "-";
-    }
-}
-
-static void copy_utf8_clipped(char *out, size_t out_size, const char *text,
-                              int16_t max_width)
-{
-    const uint8_t *p = (const uint8_t *)text;
-    size_t remaining = strnlen(text, out_size);
-    int16_t width = 0;
-    size_t used = 0;
-    while (used < remaining) {
-        size_t step = 1;
-        int16_t glyph_width = 6;
-        if ((p[0] & 0xE0) == 0xC0) { step = 2; glyph_width = 16; }
-        else if ((p[0] & 0xF0) == 0xE0) { step = 3; glyph_width = 16; }
-        else if ((p[0] & 0xF8) == 0xF0) { step = 4; glyph_width = 16; }
-        if (step > remaining - used) break;
-        for (size_t i = 1; i < step; i++) {
-            if ((p[i] & 0xC0) != 0x80) {
-                step = 1;
-                glyph_width = 6;
-                break;
-            }
-        }
-        if (width + glyph_width > max_width || used + step >= out_size) break;
-        memcpy(out + used, p, step);
-        used += step;
-        width += glyph_width;
-        p += step;
-    }
-    out[used] = '\0';
 }
 
 static uint8_t method_count(void)
@@ -347,17 +306,14 @@ static void draw_attack_confirm(void)
     y += LINE_H;
     if (record) {
         char ssid[33];
-        char clipped[33];
         memcpy(ssid, record->ssid, sizeof(ssid));
         ssid[32] = '\0';
-        const char *name = ssid[0] ? ssid : "(隐藏)";
-        copy_utf8_clipped(clipped, sizeof(clipped), name, DISPLAY_WIDTH - 6);
-        display_draw_text_utf8(3, y, clipped, COLOR_CYAN, COLOR_BLACK);
+        display_draw_text_utf8(3, y, ssid[0] ? ssid : "(隐藏)", COLOR_CYAN, COLOR_BLACK);
     } else {
         display_draw_text_utf8(3, y, "未选择目标", COLOR_RED, COLOR_BLACK);
     }
     y += LINE_H;
-    snprintf(buf, sizeof(buf), "类型 %s", attack_type_name(ui.atk_type));
+    snprintf(buf, sizeof(buf), "类型 %s", attack_type_names[ui.atk_type]);
     display_draw_text_utf8(3, y, buf, COLOR_WHITE, COLOR_BLACK);
     y += LINE_H;
     snprintf(buf, sizeof(buf), "超时 %s", timeout_names[ui.atk_timeout_index]);
@@ -379,7 +335,7 @@ static void draw_attack_status(void)
                            COLOR_BLACK);
 
     snprintf(buf, sizeof(buf), "类型 %s",
-             attack_type_name(status.type));
+             status.type < ATTACK_TYPE_COUNT ? attack_type_names[status.type] : "-");
     display_draw_text_utf8(3, CONTENT_Y + LINE_H, buf, COLOR_WHITE, COLOR_BLACK);
 
     if (status.type == ATTACK_TYPE_DOS) {
@@ -442,7 +398,7 @@ static pcap_file_info_t capture_cache[PCAP_LIST_MAX * 2];
 static unsigned capture_cache_count = 0;
 /* Name captured when the confirmation page opens, so a list refresh cannot
    change what the user is about to delete. */
-static char capture_delete_target_name[PCAP_FILENAME_MAX] = "";
+static char capture_delete_target_name[40] = "";
 
 static unsigned capture_cache_refresh(void)
 {
@@ -482,7 +438,7 @@ static void draw_capture(void)
         uint16_t bg = i == ui.capture_index ? COLOR_YELLOW : COLOR_BLACK;
         display_fill_rect(1, y, DISPLAY_WIDTH - 2, LINE_H, bg);
 
-            char name[PCAP_FILENAME_MAX];
+        char name[32];
         strncpy(name, files[i].name, sizeof(name) - 1);
         name[sizeof(name) - 1] = '\0';
 
@@ -524,7 +480,7 @@ static void draw_capture_delete(void)
     display_draw_text_utf8(3, CONTENT_Y, "确认删除？", COLOR_RED, COLOR_BLACK);
 
     if (capture_delete_target_name[0] != '\0') {
-        char name[PCAP_FILENAME_MAX];
+        char name[26];
         strncpy(name, capture_delete_target_name, sizeof(name) - 1);
         name[sizeof(name) - 1] = '\0';
         display_draw_text_utf8(3, CONTENT_Y + LINE_H, name, COLOR_WHITE, COLOR_BLACK);
@@ -627,7 +583,7 @@ static void handle_enter(void)
         case SCREEN_AP_LIST:
             if (has_ap_records()) {
                 ui.screen = SCREEN_ATTACK_TYPE;
-                ui.menu_index = ui.atk_type - ATTACK_TYPE_HANDSHAKE;
+                ui.menu_index = ui.atk_type;
             }
             break;
         case SCREEN_CAPTURE: {
@@ -649,7 +605,10 @@ static void handle_enter(void)
             bool ok;
             if (all) {
                 unsigned n = 0;
-                ok = pcap_serializer_delete_all(&n);
+                for (unsigned i = 0; i < capture_cache_count; i++) {
+                    if (pcap_serializer_delete(capture_cache[i].name)) n++;
+                }
+                ok = n > 0 || capture_cache_count == 0;
             } else {
                 ok = pcap_serializer_delete(capture_delete_target_name);
             }
@@ -666,7 +625,7 @@ static void handle_enter(void)
             ui.menu_index = 0;
             break;
         case SCREEN_ATTACK_TYPE:
-            ui.atk_type = ui.menu_index + ATTACK_TYPE_HANDSHAKE;
+            ui.atk_type = ui.menu_index;
             if (ui.atk_type == ATTACK_TYPE_HANDSHAKE || ui.atk_type == ATTACK_TYPE_DOS) {
                 ui.screen = SCREEN_ATTACK_METHOD;
                 ui.menu_index = ui.atk_method;
@@ -695,12 +654,9 @@ static void handle_enter(void)
             };
             /* Never block the UI task on a full event queue: the sniffer floods
                the shared default loop while an attack runs. */
-            if (esp_event_post(WEBSERVER_EVENTS, WEBSERVER_EVENT_ATTACK_REQUEST,
-                               &request, sizeof(request), pdMS_TO_TICKS(100)) == ESP_OK) {
-                ui.screen = SCREEN_ATTACK_STATUS;
-            } else {
-                ESP_LOGW(UI_TAG, "Attack request queue busy");
-            }
+            esp_event_post(WEBSERVER_EVENTS, WEBSERVER_EVENT_ATTACK_REQUEST,
+                           &request, sizeof(request), pdMS_TO_TICKS(100));
+            ui.screen = SCREEN_ATTACK_STATUS;
             break;
         }
         default: break;
@@ -724,12 +680,8 @@ static void handle_back(void)
         case SCREEN_ATTACK_STATUS:
             /* Stop the attack and go back to the scan list for another run.
                Non-blocking: a full queue while sniffing must not freeze the UI. */
-            if (esp_event_post(WEBSERVER_EVENTS, WEBSERVER_EVENT_ATTACK_RESET,
-                               NULL, 0, pdMS_TO_TICKS(100)) == ESP_OK) {
-                ui.screen = SCREEN_AP_LIST;
-            } else {
-                ESP_LOGW(UI_TAG, "Attack reset queue busy");
-            }
+            esp_event_post(WEBSERVER_EVENTS, WEBSERVER_EVENT_ATTACK_RESET, NULL, 0, pdMS_TO_TICKS(100));
+            ui.screen = SCREEN_AP_LIST;
             break;
         case SCREEN_ATTACK_TYPE:
         case SCREEN_ATTACK_METHOD:
