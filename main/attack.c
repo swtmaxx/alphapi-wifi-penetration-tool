@@ -92,7 +92,7 @@ void attack_update_status(attack_state_t state) {
     status_lock();
     attack_status.state = state;
     status_unlock();
-    if(state == FINISHED) {
+    if(state == FINISHED || state == STORAGE_ERROR) {
         ESP_LOGD(TAG, "Stopping attack timeout timer");
         if (esp_timer_is_active(attack_timeout_handle)) {
             ESP_ERROR_CHECK(esp_timer_stop(attack_timeout_handle));
@@ -117,6 +117,8 @@ static volatile uint32_t autostop_rearmed = 0;
 /* Why the most recent stop task bailed out, for on-device diagnosis. */
 static volatile int last_bail_state = -1;
 static volatile uint32_t last_bail_gen = 0;
+static volatile bool storage_error_latched = false;
+static char storage_error_message[96] = "抓包文件保存失败";
 
 /**
  * @brief Latched "a usable result was captured" flag.
@@ -171,12 +173,46 @@ static void success_stop_task(void *arg)
     vTaskDelete(NULL);
 }
 
+static void storage_error_stop_task(void *arg)
+{
+    uint32_t my_generation = (uint32_t) (uintptr_t) arg;
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    uint8_t type;
+    status_lock();
+    bool current = (attack_status.state == RUNNING) &&
+                   (attack_generation == my_generation);
+    type = attack_status.type;
+    status_unlock();
+
+    if (!current) {
+        storage_error_latched = false;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    attack_update_status(STORAGE_ERROR);
+    char *message = attack_alloc_result_content(strlen(storage_error_message) + 1);
+    if (message != NULL) strcpy(message, storage_error_message);
+
+    switch (type) {
+        case ATTACK_TYPE_HANDSHAKE: attack_handshake_stop(); break;
+        case ATTACK_TYPE_PMKID:     attack_pmkid_stop(); break;
+        default: break;
+    }
+
+    ESP_LOGE(TAG, "Capture storage error: %s", storage_error_message);
+    vTaskDelete(NULL);
+}
+
 /**
  * @brief Re-arm the auto-stop latch. Call when a new attack is dispatched.
  */
 static void attack_reset_success_latch(void)
 {
     success_latched = false;
+    storage_error_latched = false;
+    storage_error_message[0] = '\0';
     autostop_rearmed++;
 }
 
@@ -217,6 +253,25 @@ void attack_signal_success(void)
         ESP_LOGE(TAG, "Failed to schedule success stop");
     } else {
         autostop_scheduled++;
+    }
+}
+
+void attack_signal_storage_error(const char *message)
+{
+    if (storage_error_latched) return;
+    storage_error_latched = true;
+    if (message != NULL && message[0] != '\0') {
+        strncpy(storage_error_message, message, sizeof(storage_error_message) - 1);
+        storage_error_message[sizeof(storage_error_message) - 1] = '\0';
+    } else {
+        strcpy(storage_error_message, "抓包文件保存失败");
+    }
+
+    void *generation = (void *) (uintptr_t) attack_generation;
+    if (xTaskCreate(storage_error_stop_task, "capture_error", 4096,
+                    generation, 5, NULL) != pdPASS) {
+        storage_error_latched = false;
+        ESP_LOGE(TAG, "Failed to schedule storage-error stop");
     }
 }
 

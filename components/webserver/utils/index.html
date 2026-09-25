@@ -230,11 +230,12 @@
                 <button type="button" class="btn-secondary" onClick="loadCaptures()">刷新列表</button>
                 <button type="button" onClick="downloadAllCaptures()">下载全部</button>
             </div>
+            <p id="storage-status" class="hint">正在读取存储状态……</p>
             <div id="capture-list"><p class="hint">点击“刷新列表”查看已保存的抓包文件。</p></div>
         </fieldset>
     </section>
     <script>
-    var AttackStateEnum = { READY: 0, RUNNING: 1, FINISHED: 2, TIMEOUT: 3};
+    var AttackStateEnum = { READY: 0, RUNNING: 1, FINISHED: 2, TIMEOUT: 3, STORAGE_ERROR: 4};
     var AttackTypeEnum = { ATTACK_TYPE_PASSIVE: 0, ATTACK_TYPE_HANDSHAKE: 1, ATTACK_TYPE_PMKID: 2, ATTACK_TYPE_DOS: 3};
     var selectedApElement = -1;
     var poll;
@@ -271,6 +272,9 @@
                         break;
                     case AttackStateEnum.TIMEOUT:
                         showResult("已超时", attack_type, attack_content_size, attack_content);
+                        break;
+                    case AttackStateEnum.STORAGE_ERROR:
+                        showStorageError(attack_content_size, attack_content);
                         break;
                     default:
                         document.getElementById("errors").innerHTML = "加载攻击状态失败：未知状态。";
@@ -317,6 +321,7 @@
         document.getElementById("captures").style.display = "block";
         refreshAps();
         loadCaptures();
+        loadStorageStatus();
     }
     function showResult(status, attack_type, attack_content_size, attack_content){
         hideAllSections();
@@ -344,6 +349,17 @@
                 type = "未知";
         }
         document.getElementById("result-meta").innerHTML += type + "<br>";
+    }
+    function showStorageError(content_size, content){
+        hideAllSections();
+        clearInterval(poll);
+        document.getElementById("result").innerHTML = defaultResultContent;
+        document.getElementById("result").style.display = "block";
+        document.getElementById("result-meta").innerHTML = "存储错误<br>抓包文件";
+        var message = content_size ? new TextDecoder("utf-8").decode(content.subarray(0, content_size)) : "抓包文件保存失败";
+        document.getElementById("result-content").innerHTML = "<p class='badge err'>" + message + "</p>";
+        loadCaptures();
+        loadStorageStatus();
     }
     function refreshAps() {
         document.getElementById("ap-list").innerHTML = "正在扫描，可能需要一些时间……";
@@ -510,6 +526,7 @@
             try { list = JSON.parse(oReq.responseText); } catch(e) { list = null; }
             if(!list || list.length === 0){
                 box.innerHTML = "<p class='hint'>暂无抓包文件。</p>";
+                loadStorageStatus();
                 return;
             }
             box.innerHTML = "";
@@ -523,10 +540,27 @@
                 row.appendChild(a);
                 box.appendChild(row);
             });
+            loadStorageStatus();
         };
-        oReq.onerror = function(){ box.innerHTML = "<p class='badge err'>读取失败</p>"; };
+        oReq.onerror = function(){ box.innerHTML = "<p class='badge err'>读取失败</p>"; loadStorageStatus(); };
         oReq.open("GET", "http://192.168.4.1/pcap-list", true);
         oReq.send();
+    }
+    function loadStorageStatus(){
+        var req = new XMLHttpRequest();
+        req.onload = function(){
+            try {
+                var s = JSON.parse(req.responseText);
+                var label = "存储 " + formatSize(s.used) + " / " + formatSize(s.total) + "，剩余 " + formatSize(s.free);
+                if(s.state !== "ok") label += "（" + s.state + "）";
+                document.getElementById("storage-status").textContent = label;
+            } catch(e) {
+                document.getElementById("storage-status").textContent = "无法读取存储状态";
+            }
+        };
+        req.onerror = function(){ document.getElementById("storage-status").textContent = "无法读取存储状态"; };
+        req.open("GET", "http://192.168.4.1/storage-status", true);
+        req.send();
     }
     function downloadAllCaptures(){
         var oReq = new XMLHttpRequest();

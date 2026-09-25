@@ -107,6 +107,7 @@ static const char *attack_state_name(uint8_t state)
         case RUNNING: return "运行中";
         case FINISHED: return "完成";
         case TIMEOUT: return "超时";
+        case STORAGE_ERROR: return "存储错误";
         default: return "未知";
     }
 }
@@ -183,8 +184,19 @@ static void draw_status(void)
     snprintf(buf, sizeof(buf), "抓包 %u 个 %u B", count, total);
     display_draw_text_utf8(3, CONTENT_Y + 3 * LINE_H, buf, COLOR_CYAN, COLOR_BLACK);
 
+    pcap_storage_info_t storage;
+    if (pcap_serializer_get_storage_info(&storage)) {
+        snprintf(buf, sizeof(buf), "剩余 %u KB", storage.free_bytes / 1024u);
+        display_draw_text_utf8(3, CONTENT_Y + 4 * LINE_H, buf,
+                               storage.state == PCAP_STORAGE_OK ? COLOR_GREEN : COLOR_RED,
+                               COLOR_BLACK);
+    } else {
+        display_draw_text_utf8(3, CONTENT_Y + 4 * LINE_H, "存储不可用",
+                               COLOR_RED, COLOR_BLACK);
+    }
+
     snprintf(buf, sizeof(buf), "信道 %d", CONFIG_MGMT_AP_CHANNEL);
-    display_draw_text_utf8(3, CONTENT_Y + 4 * LINE_H, buf, COLOR_GRAY, COLOR_BLACK);
+    display_draw_text_utf8(3, CONTENT_Y + 5 * LINE_H, buf, COLOR_GRAY, COLOR_BLACK);
 
     draw_footer("返回=菜单");
 }
@@ -338,7 +350,13 @@ static void draw_attack_status(void)
              status.type < ATTACK_TYPE_COUNT ? attack_type_names[status.type] : "-");
     display_draw_text_utf8(3, CONTENT_Y + LINE_H, buf, COLOR_WHITE, COLOR_BLACK);
 
-    if (status.type == ATTACK_TYPE_DOS) {
+    if (status.state == STORAGE_ERROR) {
+        char message[48];
+        snprintf(message, sizeof(message), "%s",
+                 status.content != NULL ? status.content : "抓包文件保存失败");
+        display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, message,
+                               COLOR_RED, COLOR_BLACK);
+    } else if (status.type == ATTACK_TYPE_DOS) {
         /* On-device proof that the raw frames are accepted by the driver. */
         uint32_t ok = 0, fail = 0;
         esp_err_t last_err = ESP_OK;
@@ -394,18 +412,25 @@ static void format_size(char *out, size_t out_size, unsigned bytes)
 }
 
 /* Shared between drawing and navigation so the list is scanned once per redraw. */
-static pcap_file_info_t capture_cache[PCAP_LIST_MAX * 2];
+static pcap_file_info_t capture_cache[PCAP_LIST_MAX * 4];
 static unsigned capture_cache_count = 0;
+static unsigned capture_total_count = 0;
 /* Name captured when the confirmation page opens, so a list refresh cannot
    change what the user is about to delete. */
-static char capture_delete_target_name[40] = "";
+static char capture_delete_target_name[PCAP_FILENAME_MAX] = "";
 
 static unsigned capture_cache_refresh(void)
 {
-    unsigned count = pcap_serializer_list(capture_cache, PCAP_LIST_MAX);
-    count += pcap_serializer_list_text(capture_cache + count, PCAP_LIST_MAX);
-    capture_cache_count = count;
-    return count;
+    unsigned total = 0;
+    unsigned capacity = sizeof(capture_cache) / sizeof(capture_cache[0]);
+    if (!pcap_serializer_list_page(capture_cache, capacity, 0, &total)) {
+        capture_cache_count = 0;
+        capture_total_count = 0;
+        return 0;
+    }
+    capture_cache_count = total < capacity ? total : capacity;
+    capture_total_count = total;
+    return capture_cache_count;
 }
 
 static void draw_capture(void)
@@ -427,7 +452,7 @@ static void draw_capture(void)
     unsigned total = 0;
     for (unsigned i = 0; i < count; i++) total += files[i].size;
     format_size(sizebuf, sizeof(sizebuf), total);
-    snprintf(buf, sizeof(buf), "共 %u 个 %s", count, sizebuf);
+    snprintf(buf, sizeof(buf), "共 %u 个 %s", capture_total_count, sizebuf);
     display_draw_text_utf8(3, CONTENT_Y, buf, COLOR_YELLOW, COLOR_BLACK);
 
     int16_t y = CONTENT_Y + LINE_H;
@@ -438,7 +463,7 @@ static void draw_capture(void)
         uint16_t bg = i == ui.capture_index ? COLOR_YELLOW : COLOR_BLACK;
         display_fill_rect(1, y, DISPLAY_WIDTH - 2, LINE_H, bg);
 
-        char name[32];
+        char name[PCAP_FILENAME_MAX];
         strncpy(name, files[i].name, sizeof(name) - 1);
         name[sizeof(name) - 1] = '\0';
 
@@ -453,14 +478,15 @@ static void draw_capture(void)
         int16_t avail = right_x - 4 - 2;
         int16_t used = 0;
         size_t out = 0;
+        char clipped[PCAP_FILENAME_MAX];
         for (const uint8_t *p = (const uint8_t *) name; *p != '\0' && used < avail; p++) {
             if (used + 6 > avail) break;
-            name[out++] = (char) *p;
+            clipped[out++] = (char) *p;
             used += 6;
         }
-        name[out] = '\0';
+        clipped[out] = '\0';
 
-        display_draw_text(4, y, name, fg, bg);
+        display_draw_text(4, y, clipped, fg, bg);
         display_draw_text(right_x, y, right, fg, bg);
         y += LINE_H;
     }
@@ -605,10 +631,7 @@ static void handle_enter(void)
             bool ok;
             if (all) {
                 unsigned n = 0;
-                for (unsigned i = 0; i < capture_cache_count; i++) {
-                    if (pcap_serializer_delete(capture_cache[i].name)) n++;
-                }
-                ok = n > 0 || capture_cache_count == 0;
+                ok = pcap_serializer_delete_all(&n);
             } else {
                 ok = pcap_serializer_delete(capture_delete_target_name);
             }

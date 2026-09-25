@@ -36,7 +36,8 @@ typedef enum {
     READY,      ///< no attack is in progress and results from previous attack run are available.
     RUNNING,    ///< attack is in progress, attack_status_t.content may not be consistent.
     FINISHED,   ///< last attack finsihed and results are available.
-    TIMEOUT     ///< last attack timed out. This option will be moved as sub category of FINISHED state.
+    TIMEOUT,    ///< last attack timed out. This option will be moved as sub category of FINISHED state.
+    STORAGE_ERROR ///< capture storage failed or ran out of space.
 } attack_state_t;
 
 /**
@@ -99,6 +100,14 @@ void attack_update_status(attack_state_t state);
  * its own dispatch.
  */
 void attack_signal_success(void);
+
+/**
+ * @brief Report a capture-storage failure from a sniffer event handler.
+ *
+ * Teardown is deferred so event handlers can be unregistered safely outside
+ * the sniffer event loop.
+ */
+void attack_signal_storage_error(const char *message);
 
 /**
  * @brief Initialises attack wrapper. This function should be callend only once.

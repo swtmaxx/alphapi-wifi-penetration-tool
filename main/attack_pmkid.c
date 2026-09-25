@@ -31,6 +31,16 @@
 static const char* TAG = "main:attack_pmkid";
 static const wifi_ap_record_t *ap_record = NULL;
 
+static const char *pcap_error_message(void)
+{
+    switch (pcap_serializer_get_state()) {
+        case PCAP_STORAGE_FULL: return "抓包存储空间已满";
+        case PCAP_STORAGE_MOUNT_ERROR: return "抓包存储分区无法挂载";
+        case PCAP_STORAGE_IO_ERROR: return "PMKID 文件写入失败";
+        default: return "PMKID 文件保存失败";
+    }
+}
+
 /**
  * @brief Callback for DATA_FRAME_EVENT_PMKID event.
  * 
@@ -44,10 +54,6 @@ static const wifi_ap_record_t *ap_record = NULL;
  */
 static void pmkid_exit_condition_handler(void *args, esp_event_base_t event_base, int32_t event_id, void *event_data) {
     ESP_LOGD(TAG, "Got PMKID...");
-    /* Defer the teardown: this runs on the sniffer loop whose handlers must
-       not be unregistered from inside their own dispatch. */
-    attack_signal_success();
-
     pmkid_item_t *pmkid_item_head = *(pmkid_item_t **) event_data;
     if (pmkid_item_head == NULL) {
         ESP_LOGW(TAG, "PMKID event without any item");
@@ -70,6 +76,7 @@ static void pmkid_exit_condition_handler(void *args, esp_event_base_t event_base
             free(item);
             item = next;
         }
+        attack_signal_storage_error("PMKID 结果内存不足");
         return;
     }
     wifictl_get_sta_mac((uint8_t *) content);
@@ -125,6 +132,12 @@ static void pmkid_exit_condition_handler(void *args, esp_event_base_t event_base
         item = next;
     }
 
+    if (saved) {
+        /* Defer teardown: this callback runs on the sniffer event loop. */
+        attack_signal_success();
+    } else {
+        attack_signal_storage_error(pcap_error_message());
+    }
     ESP_LOGD(TAG, "PMKID attack finished");
 }
 

@@ -36,6 +36,17 @@
 static const char* TAG = "webserver";
 ESP_EVENT_DEFINE_BASE(WEBSERVER_EVENTS);
 
+static const char *storage_state_name(pcap_storage_state_t state)
+{
+    switch (state) {
+        case PCAP_STORAGE_OK: return "ok";
+        case PCAP_STORAGE_MOUNT_ERROR: return "mount_error";
+        case PCAP_STORAGE_FULL: return "full";
+        case PCAP_STORAGE_IO_ERROR: return "io_error";
+        default: return "unknown";
+    }
+}
+
 /**
  * @brief Handlers for index/root \c / path endpoint
  *
@@ -176,7 +187,10 @@ static esp_err_t uri_status_get_handler(httpd_req_t *req) {
     // first send attack result header
     res = httpd_resp_send_chunk(req, (char *) &attack_status, 4);
     // send attack result content
-    if(res == ESP_OK && ((attack_status.state == FINISHED) || (attack_status.state == TIMEOUT)) && (attack_status.content_size > 0)){
+    if(res == ESP_OK && ((attack_status.state == FINISHED) ||
+                         (attack_status.state == TIMEOUT) ||
+                         (attack_status.state == STORAGE_ERROR)) &&
+       (attack_status.content_size > 0)){
         res = httpd_resp_send_chunk(req, attack_status.content, attack_status.content_size);
     }
     if (res == ESP_OK) res = httpd_resp_send_chunk(req, NULL, 0);
@@ -266,28 +280,75 @@ static httpd_uri_t uri_capture_hccapx_get = {
  * @{
  */
 static esp_err_t uri_pcap_list_get_handler(httpd_req_t *req) {
-    static pcap_file_info_t files[PCAP_LIST_MAX * 2];
-    /* captures plus PMKID text results */
-    unsigned count = pcap_serializer_list(files, PCAP_LIST_MAX);
-    count += pcap_serializer_list_text(files + count, PCAP_LIST_MAX);
+    pcap_file_info_t page[8];
+    unsigned total = 0;
+    if (!pcap_serializer_list_page(page, 8, 0, &total)) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "无法读取抓包存储");
+    }
 
     httpd_resp_set_type(req, "application/json; charset=utf-8");
     esp_err_t res = httpd_resp_send_chunk(req, "[", 1);
-    for (unsigned i = 0; i < count && res == ESP_OK; i++) {
-        char chunk[96];
-        int len = snprintf(chunk, sizeof(chunk), "%s{\"name\":\"%s\",\"size\":%u}",
-                           i == 0 ? "" : ",", files[i].name, files[i].size);
-        res = httpd_resp_send_chunk(req, chunk, len);
+    bool first = true;
+    unsigned offset = 0;
+    do {
+        unsigned page_count = offset < total ? total - offset : 0;
+        if (page_count > 8) page_count = 8;
+        for (unsigned i = 0; i < page_count && res == ESP_OK; i++) {
+            char chunk[128];
+            int len = snprintf(chunk, sizeof(chunk), "%s{\"name\":\"%s\",\"size\":%u}",
+                               first ? "" : ",", page[i].name, page[i].size);
+            if (len < 0 || (size_t) len >= sizeof(chunk)) {
+                res = ESP_FAIL;
+                break;
+            }
+            res = httpd_resp_send_chunk(req, chunk, len);
+            first = false;
+        }
+        offset += page_count;
+        if (page_count == 0) break;
+        if (offset < total && res == ESP_OK &&
+            !pcap_serializer_list_page(page, 8, offset, &total)) {
+            res = ESP_FAIL;
+            break;
+        }
+    } while (offset < total && res == ESP_OK);
+    if (res == ESP_OK) {
+        res = httpd_resp_send_chunk(req, "]", 1);
     }
-    if (res == ESP_OK) res = httpd_resp_send_chunk(req, "]", 1);
     if (res == ESP_OK) res = httpd_resp_send_chunk(req, NULL, 0);
     return res;
+}
+
+static esp_err_t uri_storage_status_get_handler(httpd_req_t *req) {
+    pcap_storage_info_t info;
+    bool ok = pcap_serializer_get_storage_info(&info);
+    char body[192];
+    int len = snprintf(body, sizeof(body),
+                       "{\"mounted\":%s,\"total\":%u,\"used\":%u,"
+                       "\"free\":%u,\"state\":\"%s\"}",
+                       info.mounted ? "true" : "false", info.total_bytes,
+                       info.used_bytes, info.free_bytes,
+                       storage_state_name(info.state));
+    if (!ok && info.state == PCAP_STORAGE_OK) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "无法读取抓包存储状态");
+    }
+    httpd_resp_set_type(req, "application/json; charset=utf-8");
+    return httpd_resp_send(req, body, len);
 }
 
 static httpd_uri_t uri_pcap_list_get = {
     .uri = "/pcap-list",
     .method = HTTP_GET,
     .handler = uri_pcap_list_get_handler,
+    .user_ctx = NULL
+};
+
+static httpd_uri_t uri_storage_status_get = {
+    .uri = "/storage-status",
+    .method = HTTP_GET,
+    .handler = uri_storage_status_get_handler,
     .user_ctx = NULL
 };
 //@}
@@ -302,31 +363,20 @@ static httpd_uri_t uri_pcap_list_get = {
  */
 static esp_err_t uri_capture_file_get_handler(httpd_req_t *req) {
     char query[96];
-    char name[40] = {0};
+    char name[PCAP_FILENAME_MAX] = {0};
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
         httpd_query_key_value(query, "name", name, sizeof(name)) != ESP_OK) {
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "缺少文件参数");
     }
 
-    /* Resolve the stored size first so the final partial chunk is not lost. */
-    static pcap_file_info_t files[PCAP_LIST_MAX * 2];
-    unsigned count = pcap_serializer_list(files, PCAP_LIST_MAX);
-    count += pcap_serializer_list_text(files + count, PCAP_LIST_MAX);
-    unsigned total = 0;
-    bool found = false;
-    for (unsigned i = 0; i < count; i++) {
-        if (strcmp(files[i].name, name) == 0) {
-            total = files[i].size;
-            found = true;
-            break;
-        }
-    }
-    if (!found) {
+    pcap_file_info_t info;
+    if (!pcap_serializer_get_file_info(name, &info)) {
         return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "文件不存在");
     }
+    unsigned total = info.size;
 
     httpd_resp_set_type(req, HTTPD_TYPE_OCTET);
-    char disposition[64];
+    char disposition[PCAP_FILENAME_MAX + 32];
     snprintf(disposition, sizeof(disposition), "attachment; filename=\"%s\"", name);
     httpd_resp_set_hdr(req, "Content-Disposition", disposition);
 
@@ -364,7 +414,7 @@ static httpd_uri_t uri_capture_file_get = {
  */
 static esp_err_t uri_pcap_delete_post_handler(httpd_req_t *req) {
     char query[96];
-    char name[40] = {0};
+    char name[PCAP_FILENAME_MAX] = {0};
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
         httpd_query_key_value(query, "name", name, sizeof(name)) != ESP_OK) {
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "缺少文件参数");
@@ -393,18 +443,14 @@ static httpd_uri_t uri_pcap_delete_post = {
  * @{
  */
 static esp_err_t uri_pcap_delete_all_post_handler(httpd_req_t *req) {
-    static pcap_file_info_t files[PCAP_LIST_MAX * 2];
-    unsigned count = pcap_serializer_list(files, PCAP_LIST_MAX);
-    count += pcap_serializer_list_text(files + count, PCAP_LIST_MAX);
-
     unsigned removed = 0;
-    for (unsigned i = 0; i < count; i++) {
-        if (pcap_serializer_delete(files[i].name)) removed++;
-    }
+    bool ok = pcap_serializer_delete_all(&removed);
 
-    char body[48];
-    snprintf(body, sizeof(body), "已删除 %u 个文件", removed);
-    return httpd_resp_sendstr(req, body);
+    char body[64];
+    snprintf(body, sizeof(body), "%s已删除 %u 个文件",
+             ok ? "" : "部分删除失败，", removed);
+    return ok ? httpd_resp_sendstr(req, body) :
+                httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, body);
 }
 
 static httpd_uri_t uri_pcap_delete_all_post = {
@@ -496,6 +542,7 @@ void webserver_run(){
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_capture_pcap_get));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_capture_hccapx_get));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_pcap_list_get));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_storage_status_get));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_capture_file_get));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_pcap_delete_post));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_pcap_delete_all_post));

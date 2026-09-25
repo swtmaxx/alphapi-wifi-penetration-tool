@@ -55,13 +55,13 @@ bool pcap_serializer_init(const uint8_t *ssid, unsigned ssid_len);
  * @param size size of frame buffer
  * @param ts_usec timestamp of captured frame in microseconds
  */
-void pcap_serializer_append_frame(const uint8_t *buffer, unsigned size, unsigned ts_usec);
+bool pcap_serializer_append_frame(const uint8_t *buffer, unsigned size, unsigned ts_usec);
 
 /**
  * @brief Flushes remaining bytes and closes the capture file.
  * 
  */
-void pcap_serializer_deinit(void);
+bool pcap_serializer_deinit(void);
 
 /**
  * @brief Total size of the stored PCAP file in bytes.
@@ -88,14 +88,32 @@ unsigned pcap_serializer_get_frame_count(void);
  */
 bool pcap_serializer_read(unsigned offset, uint8_t *buf, unsigned len);
 
-/** Maximum number of capture files returned by pcap_serializer_list(). */
+/** Maximum number of entries returned by one list page. */
 #define PCAP_LIST_MAX 32
+#define PCAP_FILENAME_MAX 64
+
+/** Persistent-storage state reported by the serializer. */
+typedef enum {
+    PCAP_STORAGE_OK = 0,
+    PCAP_STORAGE_MOUNT_ERROR,
+    PCAP_STORAGE_FULL,
+    PCAP_STORAGE_IO_ERROR,
+} pcap_storage_state_t;
+
+/** Snapshot of the SPIFFS storage used for captures and PMKID results. */
+typedef struct {
+    bool mounted;
+    unsigned total_bytes;
+    unsigned used_bytes;
+    unsigned free_bytes;
+    pcap_storage_state_t state;
+} pcap_storage_info_t;
 
 /**
  * @brief Information about one stored capture file.
  */
 typedef struct {
-    char name[32];      /**< file name inside the capture directory, e.g. capture_001.pcap */
+    char name[PCAP_FILENAME_MAX]; /**< file name inside the capture directory */
     unsigned size;      /**< file size in bytes */
 } pcap_file_info_t;
 
@@ -107,6 +125,15 @@ typedef struct {
  * @return number of files written to out
  */
 unsigned pcap_serializer_list(pcap_file_info_t *out, unsigned max);
+
+/**
+ * @brief Enumerate all stored files in a paginated sequence.
+ *
+ * The sequence includes capture PCAP files and PMKID text results. The
+ * returned page is sorted by file name and total receives the full count.
+ */
+bool pcap_serializer_list_page(pcap_file_info_t *out, unsigned max,
+                               unsigned offset, unsigned *total);
 
 /**
  * @brief Reads bytes from a specific stored capture file.
@@ -126,6 +153,12 @@ bool pcap_serializer_read_file(const char *name, unsigned offset, uint8_t *buf, 
  * @return true when the file is gone afterwards
  */
 bool pcap_serializer_delete(const char *name);
+
+/** Delete all stored capture and result files, preserving an active capture. */
+bool pcap_serializer_delete_all(unsigned *removed);
+
+/** Look up one validated stored file. */
+bool pcap_serializer_get_file_info(const char *name, pcap_file_info_t *out);
 
 /**
  * @brief Write a small text result next to the captures.
@@ -150,5 +183,11 @@ bool pcap_serializer_write_text(const char *prefix, const uint8_t *ssid,
  * @return number of files written
  */
 unsigned pcap_serializer_list_text(pcap_file_info_t *out, unsigned max);
+
+/** Return the last storage error/state without attempting a mount. */
+pcap_storage_state_t pcap_serializer_get_state(void);
+
+/** Read current total, used and free storage space. */
+bool pcap_serializer_get_storage_info(pcap_storage_info_t *info);
 
 #endif /* PCAP_SERIALIZER_H */
