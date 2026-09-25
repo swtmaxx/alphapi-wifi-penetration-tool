@@ -37,7 +37,6 @@ static const char *TAG = "pcap_serializer";
 #define PCAP_FILE_PATH_SSID_FMT PCAP_BASE_PATH "/capture_%03u_%s.pcap"
 #define PCAP_SSID_TAG_MAX 24
 #define PCAP_DIR_PATH    PCAP_BASE_PATH
-#define PCAP_FILE_MASK   8
 #define WRITE_BUF_SIZE   4096
 
 static unsigned pcap_size = 0;
@@ -49,6 +48,7 @@ static char pcap_ssid_tag[PCAP_SSID_TAG_MAX + 1] = "";
 static uint8_t write_buf[WRITE_BUF_SIZE];
 static unsigned write_buf_used = 0;
 static bool spiffs_mounted = false;
+static bool pcap_failed = false;
 static SemaphoreHandle_t pcap_mutex = NULL;
 
 static bool ensure_mutex(void)
@@ -75,7 +75,7 @@ static bool mount_spiffs(void)
         .base_path = PCAP_BASE_PATH,
         .partition_label = NULL,
         .max_files = 2,
-        .format_if_mount_failed = true,
+        .format_if_mount_failed = false,
     };
     esp_err_t ret = esp_vfs_spiffs_register(&conf);
     if (ret != ESP_OK) {
@@ -88,32 +88,60 @@ static bool mount_spiffs(void)
 
 static bool flush_write_buf(void)
 {
+    if (pcap_failed) return false;
     if (pcap_file == NULL || write_buf_used == 0) return true;
     size_t written = fwrite(write_buf, 1, write_buf_used, pcap_file);
     if (written != write_buf_used) {
+        pcap_failed = true;
         ESP_LOGE(TAG, "Failed to write PCAP buffer (%u/%u bytes)",
                  (unsigned) written, write_buf_used);
         return false;
     }
     write_buf_used = 0;
     if (fflush(pcap_file) != 0) {
+        pcap_failed = true;
         ESP_LOGE(TAG, "Failed to flush PCAP file");
         return false;
     }
     return true;
 }
 
-static void append_bytes(const uint8_t *data, unsigned size)
+static bool append_bytes(const uint8_t *data, unsigned size)
 {
     while (size > 0) {
+        if (pcap_failed || pcap_file == NULL) return false;
         unsigned space = WRITE_BUF_SIZE - write_buf_used;
         unsigned copy = size > space ? space : size;
         memcpy(&write_buf[write_buf_used], data, copy);
         write_buf_used += copy;
         data += copy;
         size -= copy;
-        if (write_buf_used == WRITE_BUF_SIZE) flush_write_buf();
+        if (write_buf_used == WRITE_BUF_SIZE && !flush_write_buf()) return false;
     }
+    return true;
+}
+
+static bool parse_indexed_name(const char *name, const char *prefix, unsigned *out_index);
+
+static bool is_pcap_name(const char *name)
+{
+    unsigned index;
+    const char *extension = strrchr(name, '.');
+    return parse_indexed_name(name, "capture_", &index) &&
+           extension != NULL && strcmp(extension, ".pcap") == 0;
+}
+
+static bool is_result_name(const char *name)
+{
+    unsigned index;
+    const char *extension = strrchr(name, '.');
+    return parse_indexed_name(name, "pmkid_", &index) &&
+           extension != NULL && strcmp(extension, ".txt") == 0;
+}
+
+static bool is_stored_file_name(const char *name)
+{
+    return is_pcap_name(name) || is_result_name(name);
 }
 
 /**
@@ -239,9 +267,14 @@ bool pcap_serializer_init(const uint8_t *ssid, unsigned ssid_len)
     }
 
     if (pcap_file != NULL) {
-        flush_write_buf();
+        bool flushed = flush_write_buf();
         fclose(pcap_file);
         pcap_file = NULL;
+        write_buf_used = 0;
+        if (!flushed) {
+            unlock_serializer();
+            return false;
+        }
     }
 
     mkdir(PCAP_DIR_PATH, 0777);
@@ -265,23 +298,29 @@ bool pcap_serializer_init(const uint8_t *ssid, unsigned ssid_len)
     };
 
     write_buf_used = 0;
+    pcap_failed = false;
     pcap_size = 0;
     pcap_frames = 0;
-    append_bytes((uint8_t *)&pcap_global_header, sizeof(pcap_global_header_t));
+    if (!append_bytes((uint8_t *)&pcap_global_header, sizeof(pcap_global_header_t))) {
+        fclose(pcap_file);
+        pcap_file = NULL;
+        unlock_serializer();
+        return false;
+    }
     pcap_size = sizeof(pcap_global_header_t);
     unlock_serializer();
     return true;
 }
 
-void pcap_serializer_append_frame(const uint8_t *buffer, unsigned size, unsigned ts_usec)
+bool pcap_serializer_append_frame(const uint8_t *buffer, unsigned size, unsigned ts_usec)
 {
-    if (size == 0) return;
-    if (buffer == NULL || !ensure_mutex()) return;
+    if (size == 0) return true;
+    if (buffer == NULL || !ensure_mutex()) return false;
 
     lock_serializer();
     if (pcap_file == NULL) {
         unlock_serializer();
-        return;
+        return false;
     }
 
     if (size > SNAPLEN) size = SNAPLEN;
@@ -293,25 +332,32 @@ void pcap_serializer_append_frame(const uint8_t *buffer, unsigned size, unsigned
         .orig_len = size,
     };
 
-    append_bytes((uint8_t *)&pcap_record_header, sizeof(pcap_record_header_t));
-    append_bytes(buffer, size);
+    bool ok = append_bytes((uint8_t *)&pcap_record_header, sizeof(pcap_record_header_t)) &&
+              append_bytes(buffer, size);
+    if (!ok) {
+        unlock_serializer();
+        return false;
+    }
     pcap_size += sizeof(pcap_record_header_t) + size;
     pcap_frames++;
     unlock_serializer();
+    return true;
 }
 
-void pcap_serializer_deinit(void)
+bool pcap_serializer_deinit(void)
 {
-    if (!ensure_mutex()) return;
+    if (!ensure_mutex()) return false;
     lock_serializer();
-    flush_write_buf();
+    bool ok = !pcap_failed && flush_write_buf();
     if (pcap_file != NULL) {
-        fclose(pcap_file);
+        if (fclose(pcap_file) != 0) ok = false;
         pcap_file = NULL;
     }
     write_buf_used = 0;
+    if (!ok) pcap_failed = true;
     /* Keep the mounted partition and size available for a later download. */
     unlock_serializer();
+    return ok;
 }
 
 unsigned pcap_serializer_get_size(void)
@@ -391,9 +437,7 @@ unsigned pcap_serializer_list(pcap_file_info_t *out, unsigned max)
     if (dir != NULL) {
         struct dirent *ent;
         while ((ent = readdir(dir)) != NULL && count < max) {
-            unsigned idx = 0;
-            /* Accept capture_NNN.pcap and capture_NNN_tag.pcap. */
-            if (!parse_indexed_name(ent->d_name, "capture_", &idx)) continue;
+            if (!is_pcap_name(ent->d_name)) continue;
 
             char full[96];
             if (!build_full_path(full, sizeof(full), ent->d_name)) continue;
@@ -417,13 +461,23 @@ unsigned pcap_serializer_list(pcap_file_info_t *out, unsigned max)
 bool pcap_serializer_read_file(const char *name, unsigned offset, uint8_t *buf, unsigned len)
 {
     if (name == NULL || (buf == NULL && len != 0)) return false;
-    if (strstr(name, "..") != NULL || strchr(name, '/') != NULL) return false;
+    if (strstr(name, "..") != NULL || strchr(name, '/') != NULL ||
+        strchr(name, '\\') != NULL || !is_stored_file_name(name)) return false;
     if (!ensure_mutex()) return false;
 
     lock_serializer();
     if (!mount_spiffs()) {
         unlock_serializer();
         return false;
+    }
+
+    if (pcap_file != NULL && pcap_cur_path[0] != '\0') {
+        char active_path[96];
+        if (build_full_path(active_path, sizeof(active_path), name) &&
+            strcmp(active_path, pcap_cur_path) == 0 && !flush_write_buf()) {
+            unlock_serializer();
+            return false;
+        }
     }
 
     char full[96];
@@ -491,7 +545,8 @@ bool pcap_serializer_delete(const char *name)
 {
     if (name == NULL || name[0] == '\0') return false;
     /* Refuse anything that could escape the capture directory. */
-    if (strstr(name, "..") != NULL || strchr(name, '/') != NULL) return false;
+    if (strstr(name, "..") != NULL || strchr(name, '/') != NULL ||
+        strchr(name, '\\') != NULL || !is_stored_file_name(name)) return false;
     if (!ensure_mutex()) return false;
 
     lock_serializer();
@@ -545,7 +600,7 @@ bool pcap_serializer_write_text(const char *prefix, const uint8_t *ssid,
     size_t len = strlen(text);
     bool ok = (fwrite(text, 1, len, file) == len);
     if (ok) ok = (fputc('\n', file) != EOF);
-    fclose(file);
+    if (fclose(file) != 0) ok = false;
 
     if (!ok) {
         ESP_LOGE(TAG, "Failed to write %s", path);
@@ -572,9 +627,7 @@ unsigned pcap_serializer_list_text(pcap_file_info_t *out, unsigned max)
     if (dir != NULL) {
         struct dirent *ent;
         while ((ent = readdir(dir)) != NULL && count < max) {
-            /* only *.txt results live here, captures are *.pcap */
-            const char *dot = strrchr(ent->d_name, '.');
-            if (dot == NULL || strcmp(dot, ".txt") != 0) continue;
+            if (!is_result_name(ent->d_name)) continue;
 
             char full[96];
             if (!build_full_path(full, sizeof(full), ent->d_name)) continue;
@@ -592,4 +645,123 @@ unsigned pcap_serializer_list_text(pcap_file_info_t *out, unsigned max)
 
     qsort(out, count, sizeof(pcap_file_info_t), compare_file_info);
     return count;
+}
+
+bool pcap_serializer_list_page(pcap_file_info_t *out, unsigned max,
+                               unsigned offset, unsigned *total)
+{
+    if (total != NULL) *total = 0;
+    if (out == NULL || max == 0 || total == NULL || !ensure_mutex()) return false;
+
+    lock_serializer();
+    if (!mount_spiffs()) {
+        unlock_serializer();
+        return false;
+    }
+
+    DIR *dir = opendir(PCAP_DIR_PATH);
+    if (dir == NULL) {
+        unlock_serializer();
+        return false;
+    }
+
+    unsigned count = 0;
+    unsigned written = 0;
+    bool enumeration_ok = true;
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL) {
+        if (!is_stored_file_name(ent->d_name)) continue;
+
+        if (count >= offset && written < max) {
+            char full[96];
+            struct stat st;
+            if (!build_full_path(full, sizeof(full), ent->d_name) ||
+                stat(full, &st) != 0 || st.st_size < 0) {
+                enumeration_ok = false;
+                break;
+            }
+            strncpy(out[written].name, ent->d_name, sizeof(out[written].name) - 1);
+            out[written].name[sizeof(out[written].name) - 1] = '\0';
+            out[written].size = (pcap_file != NULL &&
+                                 strcmp(full, pcap_cur_path) == 0)
+                                    ? pcap_size : (unsigned) st.st_size;
+            written++;
+        }
+        count++;
+    }
+    closedir(dir);
+    unlock_serializer();
+    if (!enumeration_ok) return false;
+    *total = count;
+    return true;
+}
+
+bool pcap_serializer_get_file_info(const char *name, pcap_file_info_t *out)
+{
+    if (name == NULL || out == NULL || !is_stored_file_name(name) ||
+        !ensure_mutex()) return false;
+    lock_serializer();
+    if (!mount_spiffs()) {
+        unlock_serializer();
+        return false;
+    }
+
+    char full[96];
+    struct stat st;
+    bool ok = build_full_path(full, sizeof(full), name) && stat(full, &st) == 0 &&
+              st.st_size >= 0;
+    if (ok) {
+        strncpy(out->name, name, sizeof(out->name) - 1);
+        out->name[sizeof(out->name) - 1] = '\0';
+        out->size = (pcap_file != NULL && strcmp(full, pcap_cur_path) == 0)
+                        ? pcap_size : (unsigned) st.st_size;
+    }
+    unlock_serializer();
+    return ok;
+}
+
+bool pcap_serializer_delete_all(unsigned *removed)
+{
+    if (removed != NULL) *removed = 0;
+    if (removed == NULL || !ensure_mutex()) return false;
+
+    lock_serializer();
+    if (!mount_spiffs()) {
+        unlock_serializer();
+        return false;
+    }
+
+    unsigned count = 0;
+    bool progress;
+    bool deletion_failed;
+    do {
+        progress = false;
+        deletion_failed = false;
+        DIR *dir = opendir(PCAP_DIR_PATH);
+        if (dir == NULL) {
+            unlock_serializer();
+            return false;
+        }
+        struct dirent *ent;
+        while ((ent = readdir(dir)) != NULL) {
+            if (!is_stored_file_name(ent->d_name)) continue;
+            char full[96];
+            if (!build_full_path(full, sizeof(full), ent->d_name)) {
+                deletion_failed = true;
+                continue;
+            }
+            if (pcap_file != NULL && strcmp(full, pcap_cur_path) == 0) continue;
+            if (remove(full) == 0) {
+                count++;
+                progress = true;
+                break;
+            }
+            deletion_failed = true;
+        }
+        closedir(dir);
+    } while (progress);
+
+    *removed = count;
+    unlock_serializer();
+    return !deletion_failed;
 }

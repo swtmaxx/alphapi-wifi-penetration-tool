@@ -1,15 +1,20 @@
 # ESP32 Wi-Fi Penetration Tool
 ## PCAP Serializer component
 
-This component formats provided frames into PCAP binary format.
+This component streams frames into persistent PCAP files in the SPIFFS
+`storage` partition. PMKID Hashcat lines are stored as text files beside them.
 
 It's based on [Wiresharks LibPCAP file format referenc](https://gitlab.com/wireshark/wireshark/-/wikis/Development/LibpcapFileFormat).
-It simply appends new frames to a structured buffer and it can be obtained on demand.
+Capture files use an increasing index and optional SSID tag. Existing files
+are not rotated or automatically removed. When storage is full or a write
+fails, the serializer reports failure; it never formats the partition or
+deletes older files automatically.
 
 ## Usage
-1. First initialise new PCAP file buffer by calling `pcap_serializer_init()`.
-1. Then `pcap_serializer_append_frame()` is used to append more frames into the file.
-1. To get the buffer, call `pcap_serializer_get_buffer()` and `pcap_serializer_get_size()`.
+1. Call `pcap_serializer_init()` to create a new capture file.
+2. Append frames with `pcap_serializer_append_frame()` and check its return value.
+3. Call `pcap_serializer_deinit()` to flush and close the file; check its return value.
+4. Enumerate files with `pcap_serializer_list_page()` and delete only on an explicit user request.
 
 ## Reference
 Doxygen API reference available

@@ -1,6 +1,7 @@
 #include "wifi_controller.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
@@ -10,6 +11,8 @@
 #include "esp_wifi_types.h"
 #include "esp_netif.h"
 #include "esp_event.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 static const char* TAG = "wifi_controller";
 /**
@@ -17,6 +20,16 @@ static const char* TAG = "wifi_controller";
  */
 static bool wifi_init = false;
 static uint8_t original_mac_ap[6];
+static SemaphoreHandle_t radio_reservation = NULL;
+
+static wifi_auth_mode_t management_auth_mode(void)
+{
+#if CONFIG_MGMT_AP_AUTH_ON
+    return WIFI_AUTH_WPA2_PSK;
+#else
+    return WIFI_AUTH_OPEN;
+#endif
+}
 
 static void wifi_event_handler(void *event_handler_arg, esp_event_base_t event_base, int32_t event_id, void *event_data){
 
@@ -28,6 +41,11 @@ static void wifi_event_handler(void *event_handler_arg, esp_event_base_t event_b
  * @attention This function should be called only once.
  */
 static void wifi_init_apsta(){
+    if (radio_reservation == NULL) {
+        radio_reservation = xSemaphoreCreateBinary();
+        if (radio_reservation == NULL) abort();
+        xSemaphoreGive(radio_reservation);
+    }
     ESP_ERROR_CHECK(esp_netif_init());
 
     esp_netif_create_default_wifi_ap();
@@ -48,41 +66,78 @@ static void wifi_init_apsta(){
     wifi_init = true;
 }
 
-void wifictl_ap_start(wifi_config_t *wifi_config) {
+bool wifictl_ap_start(wifi_config_t *wifi_config) {
+    if (wifi_config == NULL) return false;
     ESP_LOGD(TAG, "Starting AP...");
     if(!wifi_init){
         wifi_init_apsta();
     }
 
-    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_AP, wifi_config));
-    ESP_LOGI(TAG, "AP started with SSID=%s", wifi_config->ap.ssid);
+    esp_err_t err = esp_wifi_set_config(ESP_IF_WIFI_AP, wifi_config);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to configure AP: %s", esp_err_to_name(err));
+        return false;
+    }
+    ESP_LOGI(TAG, "AP configured with SSID length %u", wifi_config->ap.ssid_len);
+    return true;
 }
 
-void wifictl_ap_stop(){
-    ESP_LOGD(TAG, "Stopping AP...");
-    wifi_config_t wifi_config = {
-        .ap = {
-            .max_connection = 0
-        },
-    };
-    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_AP, &wifi_config));
-    ESP_LOGD(TAG, "AP stopped");
-}
-
-void wifictl_mgmt_ap_start(){
+bool wifictl_mgmt_ap_start(void){
     wifi_config_t mgmt_wifi_config = {
         .ap = {
             .ssid = CONFIG_MGMT_AP_SSID,
             .ssid_len = strlen(CONFIG_MGMT_AP_SSID),
+#if CONFIG_MGMT_AP_AUTH_ON
             .password = CONFIG_MGMT_AP_PASSWORD,
+#else
+            .password = "",
+#endif
+            .channel = CONFIG_MGMT_AP_CHANNEL,
             .max_connection = CONFIG_MGMT_AP_MAX_CONNECTIONS,
-            .authmode = WIFI_AUTH_WPA2_PSK
+            .authmode = management_auth_mode()
         },
     };
-    wifictl_ap_start(&mgmt_wifi_config);
+    if (!wifictl_ap_start(&mgmt_wifi_config)) return false;
+    wifictl_move_mgmt_ap_to_channel(CONFIG_MGMT_AP_CHANNEL);
+    return true;
 }
 
-void wifictl_sta_connect_to_ap(const wifi_ap_record_t *ap_record, const char password[]){
+bool wifictl_mgmt_ap_suspend(void)
+{
+    if (!wifi_init) return false;
+    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to suspend management AP: %s", esp_err_to_name(err));
+        return false;
+    }
+    return true;
+}
+
+bool wifictl_mgmt_ap_restore(void)
+{
+    if (!wifi_init) return false;
+    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to restore APSTA mode: %s", esp_err_to_name(err));
+        return false;
+    }
+    bool mac_ok = wifictl_restore_ap_mac();
+    return wifictl_mgmt_ap_start() && mac_ok;
+}
+
+bool wifictl_radio_try_acquire(void)
+{
+    if (radio_reservation == NULL) return false;
+    return xSemaphoreTake(radio_reservation, 0) == pdTRUE;
+}
+
+void wifictl_radio_release(void)
+{
+    if (radio_reservation != NULL) xSemaphoreGive(radio_reservation);
+}
+
+bool wifictl_sta_connect_to_ap(const wifi_ap_record_t *ap_record, const char password[]){
+    if (ap_record == NULL) return false;
     ESP_LOGD(TAG, "Connecting STA to AP...");
     if(!wifi_init){
         wifi_init_apsta();
@@ -96,20 +151,30 @@ void wifictl_sta_connect_to_ap(const wifi_ap_record_t *ap_record, const char pas
             .pmf_cfg.required = false
         },
     };
-    mempcpy(sta_wifi_config.sta.ssid, ap_record->ssid, 32);
+    memcpy(sta_wifi_config.sta.ssid, ap_record->ssid,
+           sizeof(sta_wifi_config.sta.ssid));
 
     if(password != NULL){
         if(strlen(password) >= 64) {
             ESP_LOGE(TAG, "Password is too long. Max supported length is 64");
-            return;
+            return false;
         }
         memcpy(sta_wifi_config.sta.password, password, strlen(password) + 1);
     }
 
-    ESP_LOGD(TAG, ".ssid=%s", sta_wifi_config.sta.ssid);
+    ESP_LOGD(TAG, "Connecting to target AP on channel %u", ap_record->primary);
 
-    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &sta_wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_connect());
+    esp_err_t err = esp_wifi_set_config(ESP_IF_WIFI_STA, &sta_wifi_config);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to configure STA: %s", esp_err_to_name(err));
+        return false;
+    }
+    err = esp_wifi_connect();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start STA connection: %s", esp_err_to_name(err));
+        return false;
+    }
+    return true;
 
 }
 
@@ -120,18 +185,29 @@ void wifictl_sta_disconnect(){
     }
 }
 
-void wifictl_set_ap_mac(const uint8_t *mac_ap){
+bool wifictl_set_ap_mac(const uint8_t *mac_ap){
+    if (mac_ap == NULL) return false;
     ESP_LOGD(TAG, "Changing AP MAC address...");
-    ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_AP, mac_ap));
+    esp_err_t err = esp_wifi_set_mac(WIFI_IF_AP, mac_ap);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to change AP MAC: %s", esp_err_to_name(err));
+        return false;
+    }
+    return true;
 }
 
 void wifictl_get_ap_mac(uint8_t *mac_ap){
     esp_wifi_get_mac(WIFI_IF_AP, mac_ap);
 }
 
-void wifictl_restore_ap_mac(){
+bool wifictl_restore_ap_mac(void){
     ESP_LOGD(TAG, "Restoring original AP MAC address...");
-    ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_AP, original_mac_ap));
+    esp_err_t err = esp_wifi_set_mac(WIFI_IF_AP, original_mac_ap);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to restore AP MAC: %s", esp_err_to_name(err));
+        return false;
+    }
+    return true;
 }
 
 void wifictl_get_sta_mac(uint8_t *mac_sta){
@@ -150,10 +226,14 @@ void wifictl_move_mgmt_ap_to_channel(uint8_t channel){
         .ap = {
             .ssid = CONFIG_MGMT_AP_SSID,
             .ssid_len = strlen(CONFIG_MGMT_AP_SSID),
+#if CONFIG_MGMT_AP_AUTH_ON
             .password = CONFIG_MGMT_AP_PASSWORD,
+#else
+            .password = "",
+#endif
             .channel = channel,
             .max_connection = CONFIG_MGMT_AP_MAX_CONNECTIONS,
-            .authmode = WIFI_AUTH_WPA2_PSK
+            .authmode = management_auth_mode()
         },
     };
     esp_err_t ret = esp_wifi_set_config(ESP_IF_WIFI_AP, &mgmt_wifi_config);

@@ -55,7 +55,7 @@ void wifictl_sniffer_filter_frame_types(bool data, bool mgmt, bool ctrl);
  * 
  * @param channel channel on which sniffer should operate
  */
-void wifictl_sniffer_start(uint8_t channel);
+bool wifictl_sniffer_start(uint8_t channel);
 
 /**
  * @brief Stop promisuous mode

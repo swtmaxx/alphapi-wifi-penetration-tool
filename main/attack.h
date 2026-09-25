@@ -14,7 +14,10 @@
 #define ATTACK_H
 
 #include <stdbool.h>
+#include <stdint.h>
 #include "esp_wifi_types.h"
+
+#define ATTACK_STATUS_CONTENT_MAX (60U * 1024U)
 
 /**
  * @brief Implemented attack types that can be chosen.
@@ -36,7 +39,8 @@ typedef enum {
     READY,      ///< no attack is in progress and results from previous attack run are available.
     RUNNING,    ///< attack is in progress, attack_status_t.content may not be consistent.
     FINISHED,   ///< last attack finsihed and results are available.
-    TIMEOUT     ///< last attack timed out. This option will be moved as sub category of FINISHED state.
+    TIMEOUT,    ///< last attack timed out.
+    ERROR       ///< setup or persistence failed.
 } attack_state_t;
 
 /**
@@ -100,6 +104,9 @@ void attack_update_status(attack_state_t state);
  */
 void attack_signal_success(void);
 
+/** Report a setup or capture failure and stop the active attack safely. */
+void attack_signal_error(void);
+
 /**
  * @brief Initialises attack wrapper. This function should be callend only once.
  * 
@@ -121,7 +128,7 @@ char *attack_alloc_result_content(unsigned size);
  * @param buffer new data to be appended to status content
  * @param size size of the new data to be appended
  */
-void attack_append_status_content(uint8_t *buffer, unsigned size);
+bool attack_append_status_content(const uint8_t *buffer, unsigned size);
 
 /**
  * @brief Snapshot of the auto-stop state machine, for on-device diagnosis.

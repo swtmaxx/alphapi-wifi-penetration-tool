@@ -25,7 +25,7 @@
  * records unique client MACs. Returns immediately; poll
  * wifictl_client_counting_active() to know when the sweep finished.
  */
-void wifictl_start_client_counting(void);
+bool wifictl_start_client_counting(void);
 
 /**
  * @brief True while a counting sweep is running.

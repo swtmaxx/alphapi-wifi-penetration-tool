@@ -9,6 +9,7 @@
 #ifndef ATTACK_METHOD_H
 #define ATTACK_METHOD_H
 
+#include <stdbool.h>
 #include "esp_wifi_types.h"
 
 /**
@@ -18,7 +19,7 @@
  * @param period_ms period of broadcast in milliseconds (use a small value such as 100
  *        so frames repeat often enough to keep clients disconnected)
  */
-void attack_method_broadcast(const wifi_ap_record_t *ap_record, unsigned period_ms);
+bool attack_method_broadcast(const wifi_ap_record_t *ap_record, unsigned period_ms);
 
 /**
  * @brief Stop periodic deauthentication frame broadcast
@@ -31,6 +32,6 @@ void attack_method_broadcast_stop();
  * This will execute deauthentication attack for given AP.
  * @param ap_record target AP that will be cloned/duplicated
  */
-void attack_method_rogueap(const wifi_ap_record_t *ap_record);
+bool attack_method_rogueap(const wifi_ap_record_t *ap_record);
 
 #endif

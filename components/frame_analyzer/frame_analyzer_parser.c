@@ -1,160 +1,133 @@
 /**
  * @file frame_analyzer_parser.c
- * @author risinek (risinek@gmail.com)
- * @date 2021-04-05
- * @copyright Copyright (c) 2021
- * 
- * @brief Implements parsing functionality
+ * @brief Bounded 802.11, EAPOL-Key, and PMKID parsing helpers.
  */
 #include "frame_analyzer_parser.h"
 
+#include <stddef.h>
 #include <stdlib.h>
-#include <stdint.h>
 #include <string.h>
+
 #include "arpa/inet.h"
-
-#define LOG_LOCAL_LEVEL ESP_LOG_DEBUG
 #include "esp_log.h"
-#include "esp_wifi_types.h"
-
 #include "frame_analyzer_types.h"
 
 static const char *TAG = "frame_analyzer:parser";
 
-ESP_EVENT_DEFINE_BASE(FRAME_ANALYZER_EVENTS);
+bool is_frame_bssid_matching(const wifi_promiscuous_pkt_t *frame,
+                             const uint8_t *bssid)
+{
+    if (frame == NULL || bssid == NULL || frame->rx_ctrl.sig_len < 24) return false;
 
-/**
- * @brief Debug function to print raw frame to serial
- * 
- * @param frame 
- */
-void print_raw_frame(const wifi_promiscuous_pkt_t *frame){
-    for(unsigned i = 0; i < frame->rx_ctrl.sig_len; i++) {
-        printf("%02x", frame->payload[i]);
-    }
-    printf("\n");
+    const data_frame_t *data = (const data_frame_t *) frame->payload;
+    const frame_control_t *fc = &data->mac_header.frame_control;
+    if (fc->type != 2 || (fc->to_ds && fc->from_ds)) return false;
+
+    const uint8_t *frame_bssid = fc->to_ds ? data->mac_header.addr1 :
+                                 fc->from_ds ? data->mac_header.addr2 :
+                                               data->mac_header.addr3;
+    return memcmp(frame_bssid, bssid, 6) == 0;
 }
 
-/**
- * @brief Debug functions to print MAC address from given buffer to serial
- * 
- * @param a mac address buffer
- */
-void print_mac_address(const uint8_t *a){
-    printf("%02x:%02x:%02x:%02x:%02x:%02x",
-    a[0], a[1], a[2], a[3], a[4], a[5]);
-    printf("\n");
-}
+eapol_packet_t *parse_eapol_packet(data_frame_t *frame, size_t frame_len,
+                                   size_t *eapol_len)
+{
+    const size_t mac_header_len = offsetof(data_frame_t, body);
+    if (eapol_len != NULL) *eapol_len = 0;
+    if (frame == NULL || frame_len < mac_header_len) return NULL;
 
-bool is_frame_bssid_matching(wifi_promiscuous_pkt_t *frame, uint8_t *bssid) {
-    data_frame_mac_header_t *mac_header = (data_frame_mac_header_t *) frame->payload;
-    return memcmp(mac_header->addr3, bssid, 6) == 0;
-}
+    frame_control_t *fc = &frame->mac_header.frame_control;
+    if (fc->type != 2 || fc->protected_frame) return NULL;
 
-eapol_packet_t *parse_eapol_packet(data_frame_t *frame) {
-    uint8_t *frame_buffer = frame->body;
+    size_t offset = mac_header_len;
+    if (fc->to_ds && fc->from_ds) offset += 6;
+    if (fc->subtype >= 8) offset += 2;
+    if (fc->htc_order && fc->subtype >= 8) offset += 4;
 
-    if(frame->mac_header.frame_control.protected_frame == 1) {
-        ESP_LOGV(TAG, "Protected frame, skipping...");
+    const size_t llc_len = sizeof(llc_snap_header_t);
+    if (offset > frame_len || frame_len - offset < llc_len + 2) return NULL;
+
+    const uint8_t *body = (const uint8_t *) frame + offset;
+    if (body[0] != 0xaa || body[1] != 0xaa || body[2] != 0x03 ||
+        body[3] != 0x00 || body[4] != 0x00 || body[5] != 0x00) {
         return NULL;
     }
 
-    if(frame->mac_header.frame_control.subtype > 7) {
-        ESP_LOGV(TAG, "QoS data frame");
-        // Skipping QoS field (2 bytes)
-        frame_buffer += 2;
-    }
+    uint16_t ether_type;
+    memcpy(&ether_type, body + llc_len, sizeof(ether_type));
+    if (ntohs(ether_type) != ETHER_TYPE_EAPOL) return NULL;
 
-    // Skipping LLC SNAP header (6 bytes)
-    frame_buffer += sizeof(llc_snap_header_t);
-
-    // Check if frame is type of EAPoL
-    if(ntohs(*(uint16_t *) frame_buffer) == ETHER_TYPE_EAPOL) {
-        ESP_LOGD(TAG, "EAPOL packet");
-        frame_buffer += 2;
-        return (eapol_packet_t *) frame_buffer; 
-    }
-    return NULL;
+    size_t remaining = frame_len - offset - llc_len - 2;
+    if (remaining < sizeof(eapol_packet_header_t)) return NULL;
+    eapol_packet_t *packet = (eapol_packet_t *) (body + llc_len + 2);
+    size_t packet_len = sizeof(eapol_packet_header_t) +
+                        ntohs(packet->header.packet_body_length);
+    if (packet_len > remaining) return NULL;
+    if (eapol_len != NULL) *eapol_len = packet_len;
+    return packet;
 }
 
-eapol_key_packet_t *parse_eapol_key_packet(eapol_packet_t *eapol_packet){
-    if(eapol_packet->header.packet_type != EAPOL_KEY){
-        ESP_LOGD(TAG, "Not an EAPoL-Key packet.");
+eapol_key_packet_t *parse_eapol_key_packet(eapol_packet_t *eapol_packet,
+                                           size_t eapol_len,
+                                           size_t *key_body_len)
+{
+    const size_t key_fixed_len = offsetof(eapol_key_packet_t, key_data);
+    if (key_body_len != NULL) *key_body_len = 0;
+    if (eapol_packet == NULL || eapol_len < sizeof(eapol_packet_header_t)) return NULL;
+    if (eapol_packet->header.packet_type != EAPOL_KEY) return NULL;
+
+    size_t body_len = ntohs(eapol_packet->header.packet_body_length);
+    if (body_len > eapol_len - sizeof(eapol_packet_header_t) || body_len < key_fixed_len) {
         return NULL;
     }
-    return (eapol_key_packet_t *) eapol_packet->packet_body;
+
+    eapol_key_packet_t *key = (eapol_key_packet_t *) eapol_packet->packet_body;
+    size_t key_data_len = ntohs(key->key_data_length);
+    if (key_data_len > body_len - key_fixed_len) return NULL;
+    if (key_body_len != NULL) *key_body_len = body_len;
+    return key;
 }
 
-/**
- * @brief Parses all PMKIDs to linked list structure 
- * 
- * It crawlers through key data buffer and looks for PMKIDs.
- * If PMKID element is found, its saved into the list of PMKIDs.
- * @param key_data 
- * @param length of key data
- * @return pmkid_item_t* 
- */
-static pmkid_item_t *parse_pmkid_from_key_data(uint8_t *key_data, const uint16_t length){
-    if (key_data == NULL || length < sizeof(key_data_field_t)) return NULL;
+static pmkid_item_t *parse_pmkid_from_key_data(const uint8_t *key_data,
+                                               size_t length)
+{
+    pmkid_item_t *head = NULL;
+    size_t offset = 0;
 
-    uint8_t *key_data_index = key_data;
-    uint8_t *key_data_max_index = key_data + length;
-
-    pmkid_item_t *pmkid_item_head = NULL;
-
-    while (key_data_index + sizeof(key_data_field_t) <= key_data_max_index) {
-        key_data_field_t *key_data_field = (key_data_field_t *) key_data_index;
-
-        ESP_LOGV(TAG, "EAPOL-Key -> Key-Data -> type=%x; length=%x; oui=%x; data_type=%x",
-                    key_data_field->type,
-                    key_data_field->length,
-                    key_data_field->oui,
-                    key_data_field->data_type);
-
-        /* The KDE layout is: type(1) length(1) oui+data_type(4) data(length).
-           Guard against a zero/short length so the walk always advances. */
-        unsigned field_len = key_data_field->length;
-        if (field_len < 4 || key_data_index + 1 + field_len > key_data_max_index) {
-            ESP_LOGD(TAG, "Malformed key-data field (len=%u); stop parsing", field_len);
+    while (offset + 2 <= length) {
+        const uint8_t *field = key_data + offset;
+        size_t field_len = field[1];
+        size_t total_len = 2 + field_len;
+        if (total_len > length - offset) {
+            ESP_LOGD(TAG, "Truncated key-data element; stop parsing");
             break;
         }
 
-        bool matches = key_data_field->type == KEY_DATA_TYPE &&
-                       ntohl(key_data_field->oui) == KEY_DATA_OUI_IEEE80211 &&
-                       key_data_field->data_type == KEY_DATA_DATA_TYPE_PMKID_KDE;
-
-        if (matches) {
-            if (field_len < 4 + 16) {
-                ESP_LOGD(TAG, "PMKID KDE too short (len=%u)", field_len);
-            } else {
-                pmkid_item_t *item = (pmkid_item_t *) calloc(1, sizeof(pmkid_item_t));
-                if (item != NULL) {
-                    memcpy(item->pmkid, key_data_field->data, 16);
-                    item->next = pmkid_item_head;
-                    pmkid_item_head = item;
-                    ESP_LOGI(TAG, "Found PMKID");
-                } else {
-                    ESP_LOGE(TAG, "Failed to allocate PMKID item");
-                }
+        if (field[0] == KEY_DATA_TYPE && field_len >= 20 &&
+            field[2] == 0x00 && field[3] == 0x0f && field[4] == 0xac &&
+            field[5] == KEY_DATA_DATA_TYPE_PMKID_KDE) {
+            pmkid_item_t *item = calloc(1, sizeof(*item));
+            if (item == NULL) {
+                ESP_LOGE(TAG, "Failed to allocate PMKID item");
+                break;
             }
+            memcpy(item->pmkid, field + 6, sizeof(item->pmkid));
+            item->next = head;
+            head = item;
         }
 
-        key_data_index += 1 + field_len;
+        offset += total_len;
     }
-
-    return pmkid_item_head;
+    return head;
 }
 
-pmkid_item_t *parse_pmkid(eapol_key_packet_t *eapol_key){
-    if(eapol_key->key_data_length == 0){
-        ESP_LOGD(TAG, "Empty Key Data");
-        return NULL;
-    }
+pmkid_item_t *parse_pmkid(eapol_key_packet_t *eapol_key, size_t key_body_len)
+{
+    const size_t key_fixed_len = offsetof(eapol_key_packet_t, key_data);
+    if (eapol_key == NULL || key_body_len < key_fixed_len) return NULL;
+    if (eapol_key->key_information.encrypted_key_data) return NULL;
 
-    if(eapol_key->key_information.encrypted_key_data == 1){
-        ESP_LOGD(TAG, "Key Data encrypted");
-        return NULL;
-    }
-
-    return parse_pmkid_from_key_data(eapol_key->key_data, ntohs(eapol_key->key_data_length));
+    size_t key_data_len = ntohs(eapol_key->key_data_length);
+    if (key_data_len == 0 || key_data_len > key_body_len - key_fixed_len) return NULL;
+    return parse_pmkid_from_key_data(eapol_key->key_data, key_data_len);
 }

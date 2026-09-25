@@ -11,6 +11,23 @@ python -m esptool -p /dev/cu.usbmodem01 -b 115200 --after hard_reset write_flash
 
 # ESP32 Wi-Fi Penetration Tool
 
+## AlphaPi ESP32-S2 fork notes
+
+The `alphapi_esp32s2` target provides a Chinese display UI and web UI. AP
+scans show SSID, BSSID, and RSSI. Handshake capture supports rogue-AP,
+broadcast, and passive methods; PMKID capture and DoS are separate attack
+types. The unimplemented standalone passive attack type remains an internal
+enum value but is not offered by either UI.
+
+PCAP captures and PMKID text results are stored in the `storage` SPIFFS
+partition under `/pcap/`. Existing files are retained across capture runs;
+the device does not rotate or automatically delete them. The web UI pages
+through the full file list and can download individual or all listed files.
+Explicit bulk deletion skips an active capture.
+
+These changes have not been compiled or validated on hardware in this repair
+pass. Use only on networks you own or are authorized to test.
+
 This project introduces an universal tool for ESP32 platform for implementing various Wi-Fi attacks. It provides some common functionality that is commonly used in Wi-Fi attacks and makes implementing new attacks a bit simpler. It also includes Wi-Fi attacks itself like capturing PMKIDs from handshakes, or handshakes themselves by different methods like starting rogue duplicated AP or sending deauthentication frames directly, etc...
 
 Obviously cracking is not part of this project, as ESP32 is not sufficient to crack hashes in effective way. The rest can be done on this small, cheap, low-power SoC.

@@ -23,19 +23,25 @@
  * 
  * @param wifi_config 
  */
-void wifictl_ap_start(wifi_config_t *wifi_config);
-
-/**
- * @brief Stops running AP
- * 
- */
-void wifictl_ap_stop();
+bool wifictl_ap_start(wifi_config_t *wifi_config);
 
 /**
  * @brief Starts default management AP
  * 
  */
-void wifictl_mgmt_ap_start();
+bool wifictl_mgmt_ap_start(void);
+
+/** Temporarily stop the management AP while the radio sweeps channels. */
+bool wifictl_mgmt_ap_suspend(void);
+
+/** Restore the management AP, its original MAC, and configured channel. */
+bool wifictl_mgmt_ap_restore(void);
+
+/** Try to reserve the single Wi-Fi radio for a scan, probe, or attack. */
+bool wifictl_radio_try_acquire(void);
+
+/** Release a reservation previously obtained with wifictl_radio_try_acquire(). */
+void wifictl_radio_release(void);
 
 /**
  * @brief Connects station interface to the given AP
@@ -43,7 +49,7 @@ void wifictl_mgmt_ap_start();
  * @param ap_record 
  * @param password password for target network
  */
-void wifictl_sta_connect_to_ap(const wifi_ap_record_t *ap_record, const char password[]);
+bool wifictl_sta_connect_to_ap(const wifi_ap_record_t *ap_record, const char password[]);
 
 /**
  * @brief Disconnects station interface from currently connected AP
@@ -56,7 +62,7 @@ void wifictl_sta_disconnect();
  * 
  * @param mac_ap valid MAC address is expected, array of size 6
  */
-void wifictl_set_ap_mac(const uint8_t *mac_ap);
+bool wifictl_set_ap_mac(const uint8_t *mac_ap);
 
 /**
  * @brief Saves current AP interface MAC to given parameter
@@ -69,7 +75,7 @@ void wifictl_get_ap_mac(uint8_t *mac_ap);
 /**
  * @brief Restores original AP interface MAC that was set during Wi-Fi initialisation.
  */
-void wifictl_restore_ap_mac();
+bool wifictl_restore_ap_mac(void);
 
 /**
  * @brief Sets STA interface MAC address

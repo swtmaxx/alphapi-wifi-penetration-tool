@@ -19,6 +19,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_wifi.h"
+#include "wifi_controller.h"
 
 static const char* TAG = "wifi_controller/ap_scanner";
 /**
@@ -37,7 +38,11 @@ static bool ensure_scanner_mutex(void)
 esp_err_t wifictl_scan_nearby_aps(void)
 {
     if (!ensure_scanner_mutex()) return ESP_ERR_NO_MEM;
-    if (xSemaphoreTake(scanner_mutex, 0) != pdTRUE) return ESP_ERR_TIMEOUT;
+    if (!wifictl_radio_try_acquire()) return ESP_ERR_INVALID_STATE;
+    if (xSemaphoreTake(scanner_mutex, 0) != pdTRUE) {
+        wifictl_radio_release();
+        return ESP_ERR_TIMEOUT;
+    }
 
     ESP_LOGD(TAG, "Scanning nearby APs...");
 
@@ -61,11 +66,13 @@ esp_err_t wifictl_scan_nearby_aps(void)
         ESP_LOGW(TAG, "Wi-Fi scan failed: %s", esp_err_to_name(ret));
         ap_records.count = 0;
         xSemaphoreGive(scanner_mutex);
+        wifictl_radio_release();
         return ret;
     }
     ESP_LOGI(TAG, "Found %u APs.", ap_records.count);
     ESP_LOGD(TAG, "Scan done.");
     xSemaphoreGive(scanner_mutex);
+    wifictl_radio_release();
     return ESP_OK;
 }
 

@@ -10,6 +10,7 @@
 #define HCCAPX_SERIALIZER_H
 
 #include <stdint.h>
+#include <stddef.h>
 
 #include "frame_analyzer_types.h"
 
@@ -59,6 +60,6 @@ hccapx_t *hccapx_serializer_get();
  * 
  * @param frame data frame with EAPoL-Key packet
  */
-void hccapx_serializer_add_frame(data_frame_t *frame);
+void hccapx_serializer_add_frame(data_frame_t *frame, size_t frame_len);
 
 #endif

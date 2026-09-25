@@ -23,44 +23,51 @@
 static const char *TAG = "main:attack_dos";
 static attack_dos_methods_t method = -1;
 
-void attack_dos_start(attack_config_t *attack_config) {
+bool attack_dos_start(attack_config_t *attack_config) {
     ESP_LOGI(TAG, "Starting DoS attack...");
+    if (attack_config == NULL || attack_config->ap_record == NULL ||
+        attack_config->ap_record->primary == 0 ||
+        attack_config->method > ATTACK_DOS_METHOD_COMBINE_ALL) {
+        ESP_LOGE(TAG, "Invalid DoS attack configuration");
+        return false;
+    }
     method = attack_config->method;
     switch(method){
         case ATTACK_DOS_METHOD_BROADCAST:
             ESP_LOGD(TAG, "ATTACK_DOS_METHOD_BROADCAST");
-            attack_method_broadcast(attack_config->ap_record, 100);
+            return attack_method_broadcast(attack_config->ap_record, 100);
             break;
         case ATTACK_DOS_METHOD_ROGUE_AP:
             ESP_LOGD(TAG, "ATTACK_DOS_METHOD_ROGUE_AP");
-            attack_method_rogueap(attack_config->ap_record);
+            return attack_method_rogueap(attack_config->ap_record);
             break;
         case ATTACK_DOS_METHOD_COMBINE_ALL:
             ESP_LOGD(TAG, "ATTACK_DOS_METHOD_ROGUE_AP");
-            attack_method_rogueap(attack_config->ap_record);
-            attack_method_broadcast(attack_config->ap_record, 100);
-            break;
+            if (!attack_method_broadcast(attack_config->ap_record, 100)) return false;
+            return attack_method_rogueap(attack_config->ap_record);
         default:
             ESP_LOGE(TAG, "Method unknown! DoS attack not started.");
+            return false;
     }
+    return true;
 }
 
-void attack_dos_stop() {
+bool attack_dos_stop(void) {
+    bool ok = true;
     switch(method){
         case ATTACK_DOS_METHOD_BROADCAST:
             attack_method_broadcast_stop();
             break;
         case ATTACK_DOS_METHOD_ROGUE_AP:
-            wifictl_mgmt_ap_start();
-            wifictl_restore_ap_mac();
             break;
         case ATTACK_DOS_METHOD_COMBINE_ALL:
             attack_method_broadcast_stop();
-            wifictl_mgmt_ap_start();
-            wifictl_restore_ap_mac();
             break;
         default:
-            ESP_LOGE(TAG, "Unknown attack method! Attack may not be stopped properly.");
+            break;
     }
+    ok = wifictl_mgmt_ap_restore() && ok;
+    method = -1;
     ESP_LOGI(TAG, "DoS attack stopped");
+    return ok;
 }

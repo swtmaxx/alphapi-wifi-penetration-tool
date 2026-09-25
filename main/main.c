@@ -42,7 +42,9 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    wifictl_mgmt_ap_start();
+    if (!wifictl_mgmt_ap_start()) {
+        ESP_ERROR_CHECK(ESP_FAIL);
+    }
     attack_init();
     webserver_run();
     screen_ui_init();

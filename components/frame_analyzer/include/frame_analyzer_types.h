@@ -127,10 +127,6 @@ typedef struct __attribute__((__packed__)) {
  */
 #define KEY_DATA_TYPE 0xdd
 
-/**
- * @note Needs trailing byte due to casting to uint32_t and converting from netlong
- * @see Ref: 802.11-2016 [12.7.2, Table 12-6]
- */
 #define KEY_DATA_OUI_IEEE80211 0x00fac00
 
 /**
@@ -144,8 +140,8 @@ typedef struct __attribute__((__packed__)) {
 typedef struct __attribute__((__packed__)) {
     uint8_t type;
     uint8_t length;
-    uint32_t oui:24;
-    uint32_t data_type:8;
+    uint8_t oui[3];
+    uint8_t data_type;
     uint8_t data[];
 } key_data_field_t;
 
@@ -156,5 +152,11 @@ typedef struct pmkid_item {
     uint8_t pmkid[16];
     struct pmkid_item *next;
 } pmkid_item_t;
+
+typedef struct {
+    pmkid_item_t *items;
+    uint8_t ap_mac[6];
+    uint8_t sta_mac[6];
+} pmkid_capture_t;
 
 #endif

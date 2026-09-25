@@ -33,13 +33,13 @@
 #include "wifi_controller.h"
 
 static const char* TAG = "attack";
-/* Upper bound for status result content to keep RAM use predictable. */
-#define ATTACK_STATUS_CONTENT_MAX (64 * 1024)
 static attack_status_t attack_status = { .state = READY, .type = -1, .content_size = 0, .content = NULL };
 /* Own copy of the target AP so a later scan cannot invalidate the pointer mid-attack. */
 static wifi_ap_record_t active_ap_record;
 static esp_timer_handle_t attack_timeout_handle;
 static SemaphoreHandle_t attack_status_mutex;
+static bool attack_radio_reserved = false;
+static bool attack_stopping = false;
 
 static void status_lock(void)
 {
@@ -92,10 +92,10 @@ void attack_update_status(attack_state_t state) {
     status_lock();
     attack_status.state = state;
     status_unlock();
-    if(state == FINISHED) {
+    if (state == FINISHED || state == TIMEOUT || state == ERROR) {
         ESP_LOGD(TAG, "Stopping attack timeout timer");
-        if (esp_timer_is_active(attack_timeout_handle)) {
-            ESP_ERROR_CHECK(esp_timer_stop(attack_timeout_handle));
+        if (attack_timeout_handle != NULL && esp_timer_is_active(attack_timeout_handle)) {
+            esp_timer_stop(attack_timeout_handle);
         }
     } 
 }
@@ -126,6 +126,50 @@ static volatile uint32_t last_bail_gen = 0;
  * Without those resets only the very first attack would ever auto-stop.
  */
 static volatile bool success_latched = false;
+static volatile bool stop_task_pending = false;
+static volatile attack_state_t pending_terminal_state = FINISHED;
+
+static bool stop_attack_components(uint8_t type)
+{
+    switch (type) {
+        case ATTACK_TYPE_HANDSHAKE: return attack_handshake_stop();
+        case ATTACK_TYPE_PMKID: return attack_pmkid_stop();
+        case ATTACK_TYPE_DOS: return attack_dos_stop();
+        default: return false;
+    }
+}
+
+static bool stop_active_attack(uint32_t expected_generation, attack_state_t terminal_state)
+{
+    uint8_t type;
+    status_lock();
+    if (attack_status.state != RUNNING || attack_generation != expected_generation ||
+        attack_stopping) {
+        status_unlock();
+        return false;
+    }
+    attack_stopping = true;
+    type = attack_status.type;
+    status_unlock();
+
+    if (attack_timeout_handle != NULL && esp_timer_is_active(attack_timeout_handle)) {
+        esp_timer_stop(attack_timeout_handle);
+    }
+    bool cleanup_ok = stop_attack_components(type);
+
+    status_lock();
+    if (attack_generation == expected_generation && attack_status.state == RUNNING) {
+        attack_status.state = cleanup_ok ? terminal_state : ERROR;
+    }
+    attack_stopping = false;
+    if (attack_radio_reserved) {
+        attack_radio_reserved = false;
+        wifictl_radio_release();
+    }
+    status_unlock();
+    if (!cleanup_ok) ESP_LOGE(TAG, "Attack cleanup failed");
+    return cleanup_ok;
+}
 
 /**
  * @brief Deferred teardown after a successful capture.
@@ -133,41 +177,40 @@ static volatile bool success_latched = false;
  * Runs outside the sniffer event loop so unregistering handlers there is safe.
  * @param arg the attack generation that requested this stop, as a pointer value
  */
-static void success_stop_task(void *arg)
+static void deferred_stop_task(void *arg)
 {
     uint32_t my_generation = (uint32_t) (uintptr_t) arg;
     vTaskDelay(pdMS_TO_TICKS(200));
 
-    uint8_t type;
     status_lock();
     bool current = (attack_status.state == RUNNING) &&
                    (attack_generation == my_generation);
-    type = attack_status.type;
+    attack_state_t terminal_state = pending_terminal_state;
     status_unlock();
 
     if (!current) {
-        /* Either already finished, or a newer attack owns the state now.
-           Release the latch so a later signal can still try to stop. */
+        status_lock();
         last_bail_state = attack_status.state;
         last_bail_gen = attack_generation;
-        success_latched = false;
+        if (attack_generation == my_generation) {
+            success_latched = false;
+            stop_task_pending = false;
+        }
+        status_unlock();
         vTaskDelete(NULL);
         return;
     }
 
-    autostop_acted++;
-    attack_update_status(FINISHED);
-    if (esp_timer_is_active(attack_timeout_handle)) {
-        esp_timer_stop(attack_timeout_handle);
+    bool stopped = stop_active_attack(my_generation, terminal_state);
+    status_lock();
+    if (attack_generation == my_generation) stop_task_pending = false;
+    status_unlock();
+    if (stopped && terminal_state == FINISHED) {
+        autostop_acted++;
+        ESP_LOGI(TAG, "Capture goal reached; attack stopped");
+    } else if (terminal_state == ERROR) {
+        ESP_LOGE(TAG, "Attack stopped after a capture or persistence error");
     }
-
-    switch (type) {
-        case ATTACK_TYPE_HANDSHAKE: attack_handshake_stop(); break;
-        case ATTACK_TYPE_PMKID:     attack_pmkid_stop(); break;
-        default: break;
-    }
-
-    ESP_LOGI(TAG, "Goal reached; attack stopped");
     vTaskDelete(NULL);
 }
 
@@ -208,44 +251,84 @@ void attack_get_autostop_debug(uint32_t *generation, bool *latched,
 
 void attack_signal_success(void)
 {
-    if (success_latched) return;
+    status_lock();
+    if (attack_status.state != RUNNING || stop_task_pending) {
+        status_unlock();
+        return;
+    }
+    stop_task_pending = true;
+    pending_terminal_state = FINISHED;
     success_latched = true;
-    /* 4096 bytes is enough for the teardown path. */
-    void *generation = (void *) (uintptr_t) attack_generation;
-    if (xTaskCreate(success_stop_task, "atk_success", 4096, generation, 5, NULL) != pdPASS) {
-        success_latched = false;
+    uint32_t generation = attack_generation;
+    status_unlock();
+
+    if (xTaskCreate(deferred_stop_task, "atk_success", 4096,
+                    (void *)(uintptr_t)generation, 5, NULL) != pdPASS) {
+        status_lock();
+        if (attack_generation == generation) {
+            stop_task_pending = false;
+            success_latched = false;
+        }
+        status_unlock();
         ESP_LOGE(TAG, "Failed to schedule success stop");
     } else {
         autostop_scheduled++;
     }
 }
 
-void attack_append_status_content(uint8_t *buffer, unsigned size){
-    if(size == 0 || buffer == NULL){
-        ESP_LOGE(TAG, "Invalid arguments for appending status content");
+void attack_signal_error(void)
+{
+    status_lock();
+    if (attack_status.state != RUNNING || stop_task_pending) {
+        status_unlock();
         return;
     }
+    stop_task_pending = true;
+    pending_terminal_state = ERROR;
+    success_latched = false;
+    uint32_t generation = attack_generation;
+    status_unlock();
+
+    if (xTaskCreate(deferred_stop_task, "atk_error", 4096,
+                    (void *)(uintptr_t)generation, 5, NULL) != pdPASS) {
+        status_lock();
+        if (attack_generation == generation) stop_task_pending = false;
+        status_unlock();
+        ESP_LOGE(TAG, "Failed to schedule error cleanup");
+    }
+}
+
+bool attack_append_status_content(const uint8_t *buffer, unsigned size){
+    if(size == 0 || buffer == NULL){
+        ESP_LOGE(TAG, "Invalid arguments for appending status content");
+        return false;
+    }
     status_lock();
-    if (attack_status.content_size + size > ATTACK_STATUS_CONTENT_MAX) {
+    if (size > ATTACK_STATUS_CONTENT_MAX - attack_status.content_size) {
         status_unlock();
         ESP_LOGW(TAG, "Status content limit reached (%u bytes); dropping new data",
                  ATTACK_STATUS_CONTENT_MAX);
-        return;
+        return false;
     }
     char *reallocated_content = realloc(attack_status.content, attack_status.content_size + size);
     if(reallocated_content == NULL){
         status_unlock();
         ESP_LOGE(TAG, "Error reallocating status content! Status content may not be complete.");
-        return;
+        return false;
     }
     // copy new data after current content
     memcpy(&reallocated_content[attack_status.content_size], buffer, size);
     attack_status.content = reallocated_content;
     attack_status.content_size += size;
     status_unlock();
+    return true;
 }
 
 char *attack_alloc_result_content(unsigned size) {
+    if (size > ATTACK_STATUS_CONTENT_MAX) {
+        ESP_LOGE(TAG, "Result content exceeds %u-byte limit", ATTACK_STATUS_CONTENT_MAX);
+        return NULL;
+    }
     status_lock();
     free(attack_status.content);
     attack_status.content = NULL;
@@ -275,36 +358,27 @@ char *attack_alloc_result_content(unsigned size) {
  */
 static void attack_timeout(void* arg){
     ESP_LOGD(TAG, "Attack timed out");
-
-    uint8_t type;
     status_lock();
     if (attack_status.state != RUNNING) {
         status_unlock();
         return;
     }
-    attack_status.state = TIMEOUT;
-    type = attack_status.type;
+    uint32_t generation = attack_generation;
     status_unlock();
+    stop_active_attack(generation, TIMEOUT);
+}
 
-    switch(type) {
-        case ATTACK_TYPE_PMKID:
-            ESP_LOGI(TAG, "Aborting PMKID attack...");
-            attack_pmkid_stop();
-            break;
-        case ATTACK_TYPE_HANDSHAKE:
-            ESP_LOGI(TAG, "Abort HANDSHAKE attack...");
-            attack_handshake_stop();
-            break;
-        case ATTACK_TYPE_PASSIVE:
-            ESP_LOGI(TAG, "Abort PASSIVE attack...");
-            break;
-        case ATTACK_TYPE_DOS:
-            ESP_LOGI(TAG, "Abort DOS attack...");
-            attack_dos_stop();
-            break;
-        default:
-            ESP_LOGE(TAG, "Unknown attack type. Not aborting anything");
+static void set_attack_request_error(uint8_t type)
+{
+    status_lock();
+    if (attack_status.state != RUNNING && !attack_stopping) {
+        free(attack_status.content);
+        attack_status.content = NULL;
+        attack_status.content_size = 0;
+        attack_status.state = ERROR;
+        attack_status.type = type;
     }
+    status_unlock();
 }
 
 /**
@@ -322,57 +396,101 @@ static void attack_timeout(void* arg){
  * @param event_data expects attack_request_t
  */
 static void attack_request_handler(void *args, esp_event_base_t event_base, int32_t event_id, void *event_data) {
-    ESP_LOGI(TAG, "Starting attack...");
-    attack_request_t *attack_request = (attack_request_t *) event_data;
-    const wifi_ap_record_t *selected = wifictl_get_ap_record(attack_request->ap_record_id);
-    if(selected == NULL){
-        ESP_LOGE(TAG, "No AP record for id %u", attack_request->ap_record_id);
+    if (event_data == NULL) {
+        ESP_LOGE(TAG, "Attack request has no payload");
+        return;
+    }
+    attack_request_t request = *(const attack_request_t *)event_data;
+    bool valid_type = request.type >= ATTACK_TYPE_HANDSHAKE &&
+                      request.type <= ATTACK_TYPE_DOS;
+    bool valid_method = (request.type == ATTACK_TYPE_HANDSHAKE &&
+                         request.method <= ATTACK_HANDSHAKE_METHOD_PASSIVE) ||
+                        (request.type == ATTACK_TYPE_PMKID && request.method == 0) ||
+                        (request.type == ATTACK_TYPE_DOS &&
+                         request.method <= ATTACK_DOS_METHOD_COMBINE_ALL);
+    if (!valid_type || !valid_method) {
+        ESP_LOGE(TAG, "Rejected invalid attack type/method %u/%u",
+                 request.type, request.method);
+        set_attack_request_error(request.type);
+        return;
+    }
+
+    if (!wifictl_radio_try_acquire()) {
+        ESP_LOGW(TAG, "Wi-Fi radio is busy; attack request rejected");
+        set_attack_request_error(request.type);
+        return;
+    }
+
+    wifictl_ap_records_t records;
+    if (!wifictl_copy_ap_records(&records) || request.ap_record_id >= records.count) {
+        wifictl_radio_release();
+        ESP_LOGE(TAG, "No AP record for id %u", request.ap_record_id);
+        set_attack_request_error(request.type);
         return;
     }
 
     /* Snapshot the record: scanning overwrites the shared AP array. */
-    memcpy(&active_ap_record, selected, sizeof(active_ap_record));
+    memcpy(&active_ap_record, &records.records[request.ap_record_id], sizeof(active_ap_record));
 
-    attack_config_t attack_config = { .type = attack_request->type, .method = attack_request->method, .timeout = attack_request->timeout };
+    attack_config_t attack_config = {
+        .type = request.type,
+        .method = request.method,
+        .timeout = request.timeout
+    };
     attack_config.ap_record = &active_ap_record;
 
     status_lock();
-    if (attack_status.state == RUNNING) {
+    if (attack_status.state == RUNNING || attack_stopping) {
         status_unlock();
+        wifictl_radio_release();
         ESP_LOGW(TAG, "Attack already running");
         return;
     }
-    attack_status.state = RUNNING;
+    attack_radio_reserved = true;
     attack_status.type = attack_config.type;
+    attack_status.state = RUNNING;
+    free(attack_status.content);
+    attack_status.content = NULL;
+    attack_status.content_size = 0;
+    stop_task_pending = false;
+    pending_terminal_state = FINISHED;
+    success_latched = false;
+    attack_generation++;
+    uint32_t generation = attack_generation;
     status_unlock();
 
-    /* Re-arm auto-stop: the previous run may have latched it. */
     attack_reset_success_latch();
-    attack_generation++;
+    if (attack_timeout_handle != NULL && esp_timer_is_active(attack_timeout_handle)) {
+        esp_timer_stop(attack_timeout_handle);
+    }
 
-    // set timeout
-    if (esp_timer_is_active(attack_timeout_handle)) {
-        ESP_ERROR_CHECK(esp_timer_stop(attack_timeout_handle));
-    }
-    if (attack_config.timeout > 0) {
-        ESP_ERROR_CHECK(esp_timer_start_once(attack_timeout_handle, attack_config.timeout * 1000000));
-    }
-    // start attack based on it's type
+    ESP_LOGI(TAG, "Starting attack type %u", attack_config.type);
+    bool started = false;
     switch(attack_config.type) {
         case ATTACK_TYPE_PMKID:
-            attack_pmkid_start(&attack_config);
+            started = attack_pmkid_start(&attack_config);
             break;
         case ATTACK_TYPE_HANDSHAKE:
-            attack_handshake_start(&attack_config);
-            break;
-        case ATTACK_TYPE_PASSIVE:
-            ESP_LOGW(TAG, "ATTACK_TYPE_PASSIVE not implemented yet!");
+            started = attack_handshake_start(&attack_config);
             break;
         case ATTACK_TYPE_DOS:
-            attack_dos_start(&attack_config);
+            started = attack_dos_start(&attack_config);
             break;
         default:
-            ESP_LOGE(TAG, "Unknown attack type!");
+            break;
+    }
+    if (!started) {
+        ESP_LOGE(TAG, "Attack setup failed");
+        stop_active_attack(generation, ERROR);
+        return;
+    }
+    if (attack_config.timeout > 0) {
+        esp_err_t timer_err = esp_timer_start_once(
+            attack_timeout_handle, (uint64_t)attack_config.timeout * 1000000ULL);
+        if (timer_err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to start attack timeout: %s", esp_err_to_name(timer_err));
+            stop_active_attack(generation, ERROR);
+        }
     }
 }
 
@@ -389,35 +507,44 @@ static void attack_request_handler(void *args, esp_event_base_t event_base, int3
 static void attack_reset_handler(void *args, esp_event_base_t event_base, int32_t event_id, void *event_data) {
     ESP_LOGD(TAG, "Resetting attack status...");
 
-    /* A manual stop must not leave the auto-stop latch set. */
-    attack_reset_success_latch();
-
     uint8_t type;
     bool stop_required;
+    bool cleanup_ok = true;
+    for (;;) {
+        status_lock();
+        bool stopping = attack_stopping;
+        status_unlock();
+        if (!stopping) break;
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
     status_lock();
     stop_required = attack_status.state == RUNNING;
     type = attack_status.type;
-    if (stop_required) attack_status.state = READY;
+    attack_generation++;
+    attack_stopping = stop_required;
+    stop_task_pending = false;
+    success_latched = false;
     status_unlock();
 
     if (stop_required) {
-        if (esp_timer_is_active(attack_timeout_handle)) {
-            ESP_ERROR_CHECK(esp_timer_stop(attack_timeout_handle));
+        if (attack_timeout_handle != NULL && esp_timer_is_active(attack_timeout_handle)) {
+            esp_timer_stop(attack_timeout_handle);
         }
-        switch (type) {
-            case ATTACK_TYPE_PMKID:    attack_pmkid_stop(); break;
-            case ATTACK_TYPE_HANDSHAKE: attack_handshake_stop(); break;
-            case ATTACK_TYPE_DOS:      attack_dos_stop(); break;
-            default: break;
-        }
+        cleanup_ok = stop_attack_components(type);
     }
 
     status_lock();
     free(attack_status.content);
     attack_status.content = NULL;
     attack_status.content_size = 0;
-    attack_status.type = -1;
-    attack_status.state = READY;
+    attack_status.type = cleanup_ok ? -1 : type;
+    attack_status.state = cleanup_ok ? READY : ERROR;
+    if (attack_radio_reserved) {
+        attack_radio_reserved = false;
+        wifictl_radio_release();
+    }
+    attack_stopping = false;
     status_unlock();
 }
 

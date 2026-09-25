@@ -55,13 +55,13 @@ bool pcap_serializer_init(const uint8_t *ssid, unsigned ssid_len);
  * @param size size of frame buffer
  * @param ts_usec timestamp of captured frame in microseconds
  */
-void pcap_serializer_append_frame(const uint8_t *buffer, unsigned size, unsigned ts_usec);
+bool pcap_serializer_append_frame(const uint8_t *buffer, unsigned size, unsigned ts_usec);
 
 /**
  * @brief Flushes remaining bytes and closes the capture file.
  * 
  */
-void pcap_serializer_deinit(void);
+bool pcap_serializer_deinit(void);
 
 /**
  * @brief Total size of the stored PCAP file in bytes.
@@ -90,12 +90,13 @@ bool pcap_serializer_read(unsigned offset, uint8_t *buf, unsigned len);
 
 /** Maximum number of capture files returned by pcap_serializer_list(). */
 #define PCAP_LIST_MAX 32
+#define PCAP_FILENAME_MAX 64
 
 /**
  * @brief Information about one stored capture file.
  */
 typedef struct {
-    char name[32];      /**< file name inside the capture directory, e.g. capture_001.pcap */
+    char name[PCAP_FILENAME_MAX]; /**< file name inside the capture directory */
     unsigned size;      /**< file size in bytes */
 } pcap_file_info_t;
 
@@ -150,5 +151,23 @@ bool pcap_serializer_write_text(const char *prefix, const uint8_t *ssid,
  * @return number of files written
  */
 unsigned pcap_serializer_list_text(pcap_file_info_t *out, unsigned max);
+
+/**
+ * @brief List captures and text results in a single paginated sequence.
+ *
+ * @param out caller-owned page buffer
+ * @param max page capacity
+ * @param offset number of entries to skip
+ * @param total receives the number of matching files in the directory
+ * @return true when the directory was enumerated successfully
+ */
+bool pcap_serializer_list_page(pcap_file_info_t *out, unsigned max,
+                               unsigned offset, unsigned *total);
+
+/** Delete all stored captures and text results, preserving an active capture. */
+bool pcap_serializer_delete_all(unsigned *removed);
+
+/** Look up the size of one validated stored file name. */
+bool pcap_serializer_get_file_info(const char *name, pcap_file_info_t *out);
 
 #endif /* PCAP_SERIALIZER_H */

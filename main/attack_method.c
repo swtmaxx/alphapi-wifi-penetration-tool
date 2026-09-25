@@ -39,10 +39,14 @@ static void timer_send_deauth_frame(void *arg){
 /**
  * @details Starts periodic timer for sending deauthentication frame via timer_send_deauth_frame().
  */
-void attack_method_broadcast(const wifi_ap_record_t *ap_record, unsigned period_ms){
+bool attack_method_broadcast(const wifi_ap_record_t *ap_record, unsigned period_ms){
     if (ap_record == NULL || ap_record->primary == 0) {
         ESP_LOGE(TAG, "Cannot start broadcast deauth without a valid AP record");
-        return;
+        return false;
+    }
+    if (deauth_timer_handle != NULL) {
+        ESP_LOGW(TAG, "Broadcast timer is already initialized");
+        return false;
     }
     if (period_ms == 0) {
         ESP_LOGW(TAG, "Invalid broadcast period, using 100 ms");
@@ -66,13 +70,17 @@ void attack_method_broadcast(const wifi_ap_record_t *ap_record, unsigned period_
     esp_err_t err = esp_timer_create(&deauth_timer_args, &deauth_timer_handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to create deauth timer: %s", esp_err_to_name(err));
-        return;
+        deauth_timer_handle = NULL;
+        return false;
     }
     err = esp_timer_start_periodic(deauth_timer_handle, (uint64_t) period_ms * 1000ULL);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start deauth timer: %s", esp_err_to_name(err));
         esp_timer_delete(deauth_timer_handle);
+        deauth_timer_handle = NULL;
+        return false;
     }
+    return true;
 }
 
 void attack_method_broadcast_stop(){
@@ -92,18 +100,23 @@ void attack_method_broadcast_stop(){
  * 
  * @param ap_record target AP that will be cloned/duplicated
  */
-void attack_method_rogueap(const wifi_ap_record_t *ap_record){
+bool attack_method_rogueap(const wifi_ap_record_t *ap_record){
+    if (ap_record == NULL || ap_record->primary == 0) return false;
     ESP_LOGD(TAG, "Configuring Rogue AP");
-    wifictl_set_ap_mac(ap_record->bssid);
+    if (!wifictl_set_ap_mac(ap_record->bssid)) return false;
     wifi_config_t ap_config = {
         .ap = {
-            .ssid_len = strlen((char *)ap_record->ssid),
+            .ssid_len = strnlen((char *)ap_record->ssid, sizeof(ap_record->ssid)),
             .channel = ap_record->primary,
             .authmode = ap_record->authmode,
             .password = "dummypassword",
             .max_connection = 1
         },
     };
-    mempcpy(ap_config.sta.ssid, ap_record->ssid, 32);
-    wifictl_ap_start(&ap_config);
+    memcpy(ap_config.ap.ssid, ap_record->ssid, sizeof(ap_config.ap.ssid));
+    if (!wifictl_ap_start(&ap_config)) {
+        wifictl_restore_ap_mac();
+        return false;
+    }
+    return true;
 }
