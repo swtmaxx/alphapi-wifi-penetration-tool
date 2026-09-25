@@ -21,6 +21,7 @@
 #include "frame_analyzer_parser.h"
 
 static const char *TAG = "frame_analyzer";
+ESP_EVENT_DEFINE_BASE(FRAME_ANALYZER_EVENTS);
 static uint8_t target_bssid[6];
 static search_type_t search_type = -1;
 static bool data_handler_registered = false;
