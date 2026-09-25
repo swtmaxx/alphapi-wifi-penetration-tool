@@ -26,7 +26,6 @@
 #include "frame_analyzer.h"
 #include "pcap_serializer.h"
 #include "hccapx_serializer.h"
-#include "sniffer.h"
 
 static const char *TAG = "main:attack_handshake";
 static attack_handshake_methods_t method = -1;
