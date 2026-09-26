@@ -531,6 +531,10 @@ void webserver_run(){
     /* The default cap (8) is below the number of endpoints registered here,
        and exceeding it makes httpd_register_uri_handler() fail. */
     config.max_uri_handlers = 16;
+    /* Download handlers place a 2 KB stream chunk plus filename buffers on
+       the stack, and the stdio read path runs on this same task; the default
+       4 KB stack overflows and reboots the device mid-download. */
+    config.stack_size = 8192;
     httpd_handle_t server = NULL;
 
     ESP_ERROR_CHECK(httpd_start(&server, &config));
