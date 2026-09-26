@@ -1,0 +1,165 @@
+name: Release AlphaPi Firmware
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的已有版本标签，例如 v1.0.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+  PIO_ENV: alphapi_esp32s2
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Validate release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release tag: $RELEASE_TAG"
+            echo "Use a tag such as v1.0.0 or v1.0.0-rc.1"
+            exit 1
+          fi
+          git rev-parse "$RELEASE_TAG^{commit}" >/dev/null
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install platformio esptool==5.3.1
+
+      - name: Build firmware
+        run: pio run -e "$PIO_ENV"
+
+      - name: Assemble release package
+        shell: bash
+        env:
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          SOURCE_COMMIT="$(git rev-parse HEAD)"
+          base="AlphaPi-${RELEASE_TAG}"
+          package="dist/${base}"
+          build=".pio/build/${PIO_ENV}"
+          mkdir -p "${package}/firmware"
+
+          cp "${build}/bootloader.bin" "${package}/firmware/bootloader.bin"
+          cp "${build}/partitions.bin" "${package}/firmware/partitions.bin"
+          cp "${build}/firmware.bin" "${package}/firmware/firmware.bin"
+          cp release/alphapi-one-s-web-flasher.html "${package}/alphapi-one-s-web-flasher.html"
+          cp release/start-flasher.cmd "${package}/start-flasher.cmd"
+          cp release/README-web-flasher.md "${package}/README-web-flasher.md"
+          cp release/LICENSE.esptool-js "${package}/LICENSE.esptool-js"
+          cp release/LICENSE.pako "${package}/LICENSE.pako"
+          cp LICENSE "${package}/LICENSE"
+
+          python -m esptool --chip esp32s2 merge-bin \
+            --format raw --flash-mode dio --flash-freq 40m --flash-size 8MB \
+            --output "${package}/${base}.bin" \
+            0x1000 "${package}/firmware/bootloader.bin" \
+            0x8000 "${package}/firmware/partitions.bin" \
+            0x10000 "${package}/firmware/firmware.bin"
+
+          python -m esptool --chip esp32s2 image-info \
+            "${package}/firmware/firmware.bin" > "${package}/IMAGE-INFO.txt"
+
+          cat > "${package}/BUILD-INFO.txt" <<EOF
+          Project: alphapi-wifi-penetration-tool
+          Version: ${RELEASE_TAG}
+          Source commit: ${SOURCE_COMMIT}
+          GitHub Actions run: ${RUN_ID}
+          Target: AlphaPi ESP32-S2R2
+          Flash: 8 MB
+          Build environment: PlatformIO + ESP-IDF 5.0.2
+          EOF
+
+          PACKAGE_DIR="${package}" python - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["PACKAGE_DIR"])
+          output = root / "SHA256SUMS.txt"
+          files = sorted(
+              path for path in root.rglob("*")
+              if path.is_file() and path != output
+          )
+          with output.open("w", encoding="ascii", newline="\n") as handle:
+              for path in files:
+                  digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                  handle.write(f"{digest} *{path.relative_to(root).as_posix()}\n")
+          PY
+
+          cat > dist/RELEASE_NOTES.md <<EOF
+          ## AlphaPi Wi-Fi 安全测试工具 ${RELEASE_TAG}
+
+          这是面向 AlphaPi ESP32-S2R2 的授权 Wi-Fi 安全测试固件。
+
+          - 源码提交：\`${SOURCE_COMMIT}\`
+          - GitHub Actions：\`${RUN_ID}\`
+          - 三段刷写会保留 \`0x310000\` 起的 storage 抓包分区。
+          - 合并固件会覆盖 NVS/PHY 配置，但不会覆盖 storage 分区。
+
+          仅在你拥有或明确获准测试的网络上使用。
+          EOF
+
+          (cd dist && zip -r -9 "${base}.zip" "${base}" >/dev/null)
+          tar -C dist -czf "dist/${base}.tar.gz" "${base}"
+
+      - name: Upload release bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.RELEASE_TAG }}-release-bundle
+          path: dist/
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          base="AlphaPi-${RELEASE_TAG}"
+          args=(
+            "$RELEASE_TAG"
+            --repo "$GITHUB_REPOSITORY"
+            --verify-tag
+            --title "AlphaPi Wi-Fi 安全测试工具 ${RELEASE_TAG}"
+            --notes-file dist/RELEASE_NOTES.md
+            "dist/${base}.zip"
+            "dist/${base}.tar.gz"
+          )
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "${args[@]}"

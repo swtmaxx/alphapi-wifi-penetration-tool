@@ -80,6 +80,24 @@ python components/webserver/utils/gen_page_header.py components/webserver/utils/
 
 工作流地址：<https://github.com/swtmaxx/alphapi-wifi-penetration-tool/actions/workflows/build.yml>
 
+### GitHub Releases
+
+发布版本时创建并推送语义化版本标签，例如：
+
+```shell
+git tag -a v1.0.0 -m "AlphaPi v1.0.0"
+git push origin v1.0.0
+```
+
+[`release.yml`](.github/workflows/release.yml) 会在标签推送后自动执行构建并创建 GitHub Release。Release 包含：
+
+- `AlphaPi-vX.Y.Z.zip` 和 `AlphaPi-vX.Y.Z.tar.gz`；
+- 三段固件和从 `0x0` 写入的合并固件；
+- 中文刷写说明、网页刷写器、启动脚本和 SHA-256 校验文件；
+- `BUILD-INFO.txt`、`IMAGE-INFO.txt` 和源码提交信息。
+
+也可以在 Actions 页面手动运行 `Release AlphaPi Firmware`，输入一个已经存在的 `vX.Y.Z` 标签。带有 `-rc`、`-beta` 等后缀的标签会自动标记为预发布版本。
+
 ## 刷写
 
 确认设备串口后，把下面的 `COM5` 替换为实际端口。命令使用 esptool v5 的 `write-flash` 语法：
@@ -164,6 +182,7 @@ components/webserver/         HTTP API 和中文网页
 components/display/            AlphaPi ST7789 显示驱动和字库
 components/wsl_bypasser/       原始 802.11 帧发送支持
 doc/                           理论说明、图示和图片
+release/                       网页刷写器、发布说明和第三方许可
 firmware/、backups/            工作区本地恢复资料，不属于本公开仓库
 ```
 
