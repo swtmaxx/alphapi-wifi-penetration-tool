@@ -1,15 +1,13 @@
-**Note:** This is the version for ESP32S2 chip. All the *.bin has been builded by default, you only need to flash your ESP32S2 with `idf.py flash` or using `esptool.py`
-```
-esptool.py -p /dev/ttyS5 -b 115200 --after hard_reset write_flash --flash_mode dio --flash_freq 40m --flash_size detect 0x8000 build/partition_table/partition-table.bin 0x1000 build/bootloader/bootloader.bin 0x10000 build/esp32-wifi-penetration-tool.bin
-```
-
-Or in MacOS
-```
-python -m esptool -p /dev/cu.usbmodem01 -b 115200 --after hard_reset write_flash --flash_mode dio --flash_freq 40m --flash_size detect 0x8000 build/partition_table/partition-table.bin 0x1000 build/bootloader/bootloader.bin 0x10000 build/esp32-wifi-penetration-tool.bin
-```
-
-
 # ESP32 Wi-Fi Penetration Tool
+
+This repository contains the AlphaPi ESP32-S2 adaptation of the original
+ESP32 Wi-Fi Penetration Tool. The firmware adds a Chinese screen/web UI,
+persistent PCAP and PMKID result files, file download management, and the
+AlphaPi display and input mapping.
+
+The project is for security testing on networks that you own or are explicitly
+authorized to assess. Do not use the deauthentication, rogue AP, or denial of
+service features against third-party networks.
 
 This project introduces an universal tool for ESP32 platform for implementing various Wi-Fi attacks. It provides some common functionality that is commonly used in Wi-Fi attacks and makes implementing new attacks a bit simpler. It also includes Wi-Fi attacks itself like capturing PMKIDs from handshakes, or handshakes themselves by different methods like starting rogue duplicated AP or sending deauthentication frames directly, etc...
 
@@ -40,34 +38,42 @@ Obviously cracking is not part of this project, as ESP32 is not sufficient to cr
 1. Power ESP32
 1. Management AP is started automatically after boot
 1. Connect to this AP\
-By default: 
+By default:
 *SSID:* `ManagementAP` and *password:* `mgmtadmin`
+
+Change the management AP password in the project configuration before building
+if the device will be used outside a private test setup. The default password
+is published here only so the first connection is reproducible.
 1. In browser open `192.168.4.1` and you should see a web client to configure and control tool like this:
 
     ![Web client UI](doc/images/ui-config.png)
 
 ## Build
-This project is currently developed using ESP-IDF 4.1 (commit `5ef1b390026270503634ac3ec9f1ec2e364e23b2`). It may be broken on newer version.
+The AlphaPi firmware uses PlatformIO with ESP-IDF 5.0.2 and targets an
+ESP32-S2R2 with 8 MB flash.
 
-Project can be built in the usual ESP-IDF way:
+Build locally from this directory:
 
 ```shell
-idf.py build
+pio run -e alphapi_esp32s2
 ```
 
-Legacy method using `make` is not supported by this project.
+The GitHub Actions workflow builds the same environment on every push to
+`main` and uploads `bootloader.bin`, `partitions.bin`, and `firmware.bin` as a
+workflow artifact.
 
 ## Flash
-If you have setup ESP-IDF, the easiest way is to use `idf.py flash`.
+Download the artifact from the `Build ESP32-S2 Firmware` workflow and use
+[`esptool`](https://github.com/espressif/esptool). Replace `COM5` with the
+serial port of your board:
 
-In case you don't want to setup whole ESP-IDF, you can use pre-build binaries included in [`build/`](build/) and flash them using [`esptool.py`](https://github.com/espressif/esptool) (requires Python).
-
-Example command (follow instructions in [esptool repo](https://github.com/espressif/esptool)):
 ```
-esptool.py -p /dev/ttyS5 -b 115200 --after hard_reset write_flash --flash_mode dio --flash_freq 40m --flash_size detect 0x8000 build/partition_table/partition-table.bin 0x1000 build/bootloader/bootloader.bin 0x10000 build/esp32-wifi-penetration-tool.bin
+esptool --chip esp32s2 --port COM5 --baud 460800 write-flash --flash-mode dio --flash-freq 40m --flash-size 8MB 0x1000 bootloader.bin 0x8000 partitions.bin 0x10000 firmware.bin
 ```
 
-On Windows you can use official [Flash Download Tool](https://www.espressif.com/en/support/download/other-tools).
+This command updates the bootloader, partition table, and application only. It
+does not erase the `storage` partition at `0x310000`, where captured files are
+stored.
 
 ## Documentation
 ### Wi-Fi attacks
@@ -123,6 +129,10 @@ Based on experimental measurements, ESP32 consumes around 100mA during attack ex
 
 ## Contributing
 Feel free to contribute. Don't hestitate to refactor current code base. Please stick to Doxygen notation when commenting new functions and files. This project is mainly build for educational and demonstration purposes, so verbose documentation is welcome.
+
+Please do not commit captures, full-flash backups, private firmware, device
+credentials, or access tokens. See [SECURITY.md](SECURITY.md) before opening an
+issue that contains device logs.
 
 ## Disclaimer
 This project demonstrates vulnerabilities of Wi-Fi networks and its underlaying 802.11 standard and how ESP32 platform can be utilised to attack on those vulnerable spots. Use responsibly against networks you have permission to attack on.
