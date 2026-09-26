@@ -176,3 +176,12 @@ firmware/、backups/            工作区本地恢复资料，不属于本公开
 ## 许可证与来源
 
 本项目使用 MIT License，详见 [`LICENSE`](LICENSE)。其中部分组件和设计来自原始 ESP32 Wi-Fi Penetration Tool 及 ESP32-Deauther 相关项目，具体说明见各组件 README 和源文件注释。请保留原作者的版权和许可证声明。
+
+### 原始仓库与原始 README
+
+本仓库是面向 AlphaPi One S v1.7、ESP32-S2R2 的独立适配版，不是原始项目的官方仓库。
+
+- 原始仓库：[`risinek/esp32-wifi-penetration-tool`](https://github.com/risinek/esp32-wifi-penetration-tool)
+- 原始 README：[`README.md`](https://github.com/risinek/esp32-wifi-penetration-tool/blob/master/README.md)
+- ESP32-S2 参考分支：[`ZhengLinLei/esp32-wifi-penetration-tool/tree/esp32s2`](https://github.com/ZhengLinLei/esp32-wifi-penetration-tool/tree/esp32s2)
+- 当前 AlphaPi 仓库：[`swtmaxx/alphapi-wifi-penetration-tool`](https://github.com/swtmaxx/alphapi-wifi-penetration-tool)
