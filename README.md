@@ -1,141 +1,178 @@
-# ESP32 Wi-Fi Penetration Tool
+# AlphaPi ESP32 Wi-Fi 安全测试工具
 
-This repository contains the AlphaPi ESP32-S2 adaptation of the original
-ESP32 Wi-Fi Penetration Tool. The firmware adds a Chinese screen/web UI,
-persistent PCAP and PMKID result files, file download management, and the
-AlphaPi display and input mapping.
+这是面向 AlphaPi One S v1.7 开发板的 ESP32-S2R2 固件，用于经过授权的 Wi-Fi 安全测试、协议学习和抓包分析。项目保留了原始 ESP32 Wi-Fi Penetration Tool 的组件化结构，并加入了 AlphaPi 的屏幕、按键、中文网页界面和 Flash 文件管理功能。
 
-The project is for security testing on networks that you own or are explicitly
-authorized to assess. Do not use the deauthentication, rogue AP, or denial of
-service features against third-party networks.
+> 只在你拥有或明确获准测试的网络上使用本项目。广播去认证、诱骗 AP 和拒绝服务功能可能会中断其他设备的网络连接，未经授权使用可能违法。
 
-This project introduces an universal tool for ESP32 platform for implementing various Wi-Fi attacks. It provides some common functionality that is commonly used in Wi-Fi attacks and makes implementing new attacks a bit simpler. It also includes Wi-Fi attacks itself like capturing PMKIDs from handshakes, or handshakes themselves by different methods like starting rogue duplicated AP or sending deauthentication frames directly, etc...
+## 当前状态
 
-Obviously cracking is not part of this project, as ESP32 is not sufficient to crack hashes in effective way. The rest can be done on this small, cheap, low-power SoC.
+- 目标芯片：ESP32-S2R2，单核 240 MHz，2 MB PSRAM。
+- 目标 Flash：8 MB。
+- 固件框架：PlatformIO + ESP-IDF 5.0.2。
+- 本地屏幕：ST7789，160 x 128。
+- 默认管理热点：SSID `ManagementAP`，密码 `mgmtadmin`。
+- 顶层“被动”攻击入口仍未实现，网页中处于禁用状态；握手抓包中的“仅抓包”方法可以使用。
+- GitHub Actions 会为 `main` 分支构建固件并上传构建产物。
 
-<p align="center">
-    <img src="doc/images/logo.png" alt="Logo">
-</p>
+## 功能
 
-## Features
-- **PMKID capture**
-- **WPA/WPA2 handshake capture** and parsing
-- **Deauthentication attacks** using various methods
-- **Denial of Service attacks**
-- Formatting captured traffic into **PCAP format**
-- Parsing captured handshakes into **HCCAPX file** ready to be cracked by Hashcat
-- Passive handshake sniffing
-- Easily extensible framework for new attacks implementations
-- Management AP for easy configuration on the go using smartphone for example
-- And more...
+- 扫描附近接入点，显示网络名称、BSSID 和 RSSI 信号强度。
+- 客户端探测，逐信道统计目标 AP 附近的客户端。
+- WPA/WPA2 握手抓包和 HCCAPX 结果导出。
+- PMKID 抓取和文本结果持久化。
+- PCAP 文件写入 SPIFFS，并在网页中查看、下载和删除。
+- 网页一次下载全部已保存文件，并显示存储总量、已用空间和剩余空间。
+- 屏幕端提供设备信息、网络扫描、攻击配置和抓包文件管理。
+- 设备日志可通过网页 `/logs` 接口读取。
+- 存储分区挂载失败时不会自动格式化，避免历史抓包被清除。
 
-### Demo video
-[![Demonstration Youtube video](https://img.youtube.com/vi/9I3BxRu86GE/0.jpg)](https://www.youtube.com/watch?v=9I3BxRu86GE)
+## 攻击模式
 
+| 类型 | 可选方式 | 当前说明 |
+| --- | --- | --- |
+| 被动 | 无 | 顶层入口保留但尚未实现 |
+| 握手抓包 | 诱骗 AP、广播去认证、仅抓包 | 抓包成功率取决于目标 AP 和客户端行为 |
+| PMKID | 自动连接尝试 | 不需要预先知道目标 Wi-Fi 密码 |
+| 拒绝服务 | 诱骗 AP、广播去认证、全部组合 | 设备可能忽略广播去认证帧，效果不保证 |
 
-## Usage
-1. [Build](#Build) and [flash](#Flash) project onto ESP32 (DevKit or module)
-1. Power ESP32
-1. Management AP is started automatically after boot
-1. Connect to this AP\
-By default:
-*SSID:* `ManagementAP` and *password:* `mgmtadmin`
+握手 PCAP 会写入目标 AP 的第一帧 Beacon，以及分析器识别到的目标 EAPOL 数据帧。PCAP 中是否包含完整 ESSID 取决于目标 AP 是否公开广播 SSID；文件名中的标签不能替代抓包内的 ESSID。
 
-Change the management AP password in the project configuration before building
-if the device will be used outside a private test setup. The default password
-is published here only so the first connection is reproducible.
-1. In browser open `192.168.4.1` and you should see a web client to configure and control tool like this:
+## 硬件与 Flash 分区
 
-    ![Web client UI](doc/images/ui-config.png)
+| 分区 | 起始地址 | 大小 | 用途 |
+| --- | ---: | ---: | --- |
+| `nvs` | `0x9000` | 24 KB | ESP-IDF NVS |
+| `phy_init` | `0xf000` | 4 KB | PHY 校准数据 |
+| `factory` | `0x10000` | 3 MB | 应用固件 |
+| `storage` | `0x310000` | 4 MB | SPIFFS 抓包和 PMKID 结果 |
 
-## Build
-The AlphaPi firmware uses PlatformIO with ESP-IDF 5.0.2 and targets an
-ESP32-S2R2 with 8 MB flash.
+抓包文件保存在 `storage` 分区。刷写启动器、分区表和应用时不需要擦除这个分区；不要执行整片 `erase-flash`，除非你已经备份了设备数据。
 
-Build locally from this directory:
+## 构建
+
+### 本地构建
+
+在本 README 所在目录执行：
 
 ```shell
 pio run -e alphapi_esp32s2
 ```
 
-The GitHub Actions workflow builds the same environment on every push to
-`main` and uploads `bootloader.bin`, `partitions.bin`, and `firmware.bin` as a
-workflow artifact.
+本地上传可以使用：
 
-## Flash
-Download the artifact from the `Build ESP32-S2 Firmware` workflow and use
-[`esptool`](https://github.com/espressif/esptool). Replace `COM5` with the
-serial port of your board:
-
-```
-esptool --chip esp32s2 --port COM5 --baud 460800 write-flash --flash-mode dio --flash-freq 40m --flash-size 8MB 0x1000 bootloader.bin 0x8000 partitions.bin 0x10000 firmware.bin
+```shell
+pio run -e alphapi_esp32s2 -t upload
 ```
 
-This command updates the bootloader, partition table, and application only. It
-does not erase the `storage` partition at `0x310000`, where captured files are
-stored.
+修改网页源文件后，需要重新生成嵌入式网页头文件：
 
-## Documentation
-### Wi-Fi attacks
-Attacks implementations in this project are described in [main component README](main/). Theory behind these attacks is located in [doc/ATTACKS_THEORY.md](doc/ATTACKS_THEORY.md)
-### API reference
-This project uses Doxygen notation for documenting components API and implementation. Doxyfile is included so if you want to generate API reference, just run `doxygen` from root directory. It will generate HTML API reference into `doc/api/html`.
+```shell
+python components/webserver/utils/gen_page_header.py components/webserver/utils/index.html components/webserver/pages/page_index.h page_index
+```
 
-### Components
-This project consists of multiple components, that can be reused in other projects. Each component has it's own README with detailed description. Here comes brief description of components:
+### GitHub Actions
 
-- [**Main**](main) component is entry point for this project. All neccessary initialisation steps are done here. Management AP is started and the control is handed to webserver.
-- [**Wifi Controller**](components/wifi_controller) component wraps all Wi-Fi related operations. It's used to start AP, connect as STA, scan nearby APs etc. 
-- [**Webserver**](components/webserver) component provides web UI to configure attacks. It expects that AP is started and no additional security features like SSL encryption are enabled.
-- [**Wi-Fi Stack Libraries Bypasser**](components/wsl_bypasser) component bypasses Wi-Fi Stack Libraries restriction to send some types of arbitrary 802.11 frames.
-- [**Frame Analyzer**](components/frame_analyzer) component processes captured frames and provides parsing functionality to other components.
-- [**PCAP Serializer**](components/pcap_serializer) component serializes captured frames into PCAP binary format and provides it to other components (mostly for webserver/UI)
-- [**HCCAPX Serializer**](components/hccapx_serializer) component serializes captured frames into HCCAPX binary format and provides it to other components (mostly for webserver/UI)
+工作流位于 [`build.yml`](.github/workflows/build.yml)。在 GitHub 的 Actions 页面手动运行，或向 `main` 分支推送提交后，下载对应运行记录中的 `alphapi_esp32s2-firmware` 工件。工件包含：
 
-### Further reading
-* [Academic paper about this project (PDF)](https://excel.fit.vutbr.cz/submissions/2021/048/48.pdf)
+- `bootloader.bin`
+- `partitions.bin`
+- `firmware.bin`
 
-## Hardware 
-This project was mostly build and tested on **ESP32-DEVKITC-32E**
-but there should not be any differences for any **ESP32-WROOM-32** modules.
+工作流地址：<https://github.com/swtmaxx/alphapi-wifi-penetration-tool/actions/workflows/build.yml>
 
-<p align="center">
-    <img src="doc/images/soucastky_8b.png" alt="Hw components" width="400">
-</p>
+## 刷写
 
-On the following pictures you can see a battery (Li-Pol accumulator) powered ESP32 DevKitC using following hardware:
-- **ESP32-DEVKITC-32E** (cost 213 CZK/8.2 EUR/9.6 USD)
-- 220mAh Li-Pol 3.7V accumulator (weights ±5g, cost 77 CZK/3 EUR/3.5 USD)
-- MCP1702-3302ET step-down 3.3V voltage regulator (cost 11 CZK/0.42 EUR/0.50 USD)
-- Czech 5-koruna coin for scale (weights 4.8g, diameter 23 mm, cost 0.19 EUR/0.23 USD)
-<p align="center">
-    <img src="doc/images/mini.jpg" alt="Hw components" width="300">
-    <img src="doc/images/mini2.jpg" alt="Hw components" width="300">
-</p>
+确认设备串口后，把下面的 `COM5` 替换为实际端口。命令使用 esptool v5 的 `write-flash` 语法：
 
-Altogether (without coin) this setup weights around 17g. This can be further downsized by using smaller Li-Pol accumulator and using ESP32-WROOM-32 modul directly instead of whole dev board.
+```shell
+python -m esptool --chip esp32s2 --port COM5 --baud 460800 write-flash --flash-mode dio --flash-freq 40m --flash-size 8MB 0x1000 bootloader.bin 0x8000 partitions.bin 0x10000 firmware.bin
+```
 
-This setup cost me around 300 CZK (± 11.50 EUR/13.50 USD). Using the modul directly that costs around 80 CZK (± 3 EUR/3.5 USD) we can get to price of 160 CZK (± 6.5 EUR/7.5 USD) which makes this tool really cheap and available to almost everybody.
+这条命令只更新启动器、分区表和应用区，不写入 `0x310000` 起的 `storage` 分区。刷写前仍建议保留完整 Flash 备份。
 
-### Power consumption
-Based on experimental measurements, ESP32 consumes around 100mA during attack executions. 
+## 第一次使用
 
-## Similar projects
-* [GANESH-ICMC/esp32-deauther](https://github.com/GANESH-ICMC/esp32-deauther)
-* [SpacehuhnTech/esp8266_deauther](https://github.com/SpacehuhnTech/esp8266_deauther)
-* [justcallmekoko/ESP32Marauder](https://github.com/justcallmekoko/ESP32Marauder)
-* [EParisot/esp32-network-toolbox](https://www.tindie.com/products/klhnikov/esp32-network-toolbox/)
-* [Jeija/esp32free80211](https://github.com/Jeija/esp32free80211)
+1. 给 AlphaPi 上电，等待设备启动管理热点。
+2. 手机或电脑连接 `ManagementAP`，默认密码为 `mgmtadmin`。
+3. 打开 <http://192.168.4.1/>。
+4. 进入网络扫描，选择目标 AP 后配置攻击类型和超时时间。
+5. 抓包结束后，在“抓包文件”区域下载对应的 PCAP 或 PMKID 结果。
 
-## Contributing
-Feel free to contribute. Don't hestitate to refactor current code base. Please stick to Doxygen notation when commenting new functions and files. This project is mainly build for educational and demonstration purposes, so verbose documentation is welcome.
+管理热点密码可以在 ESP-IDF 的 `Wi-Fi Controller -> Management AP` 配置中修改。公开发布或长期使用时，不要继续使用默认密码。
 
-Please do not commit captures, full-flash backups, private firmware, device
-credentials, or access tokens. See [SECURITY.md](SECURITY.md) before opening an
-issue that contains device logs.
+## 屏幕菜单
 
-## Disclaimer
-This project demonstrates vulnerabilities of Wi-Fi networks and its underlaying 802.11 standard and how ESP32 platform can be utilised to attack on those vulnerable spots. Use responsibly against networks you have permission to attack on.
+屏幕主菜单包含三个页面：
 
-## License
-Even though this project is licensed under MIT license (see [LICENSE](LICENSE) file for details), don't be shy or greedy and share your work.
+- **设备信息**：管理热点名称、密码、地址、抓包数量、存储剩余空间和管理信道。
+- **网络扫描**：扫描附近 AP，选择目标并进入攻击配置。
+- **抓包文件**：浏览、删除单个文件或删除全部历史结果。
+
+攻击过程中，状态页会显示当前类型、PCAP 帧数、文件大小、自动停止诊断信息和存储错误。
+
+## 抓包文件
+
+新抓包文件使用递增编号和可选 SSID 标签命名，例如：
+
+```text
+capture_001_HomeWiFi.pcap
+capture_002.pcap
+pmkid_001_HomeWiFi.txt
+```
+
+文件名标签只保留 ASCII 字母、数字、连字符和下划线；中文或其他字符会被替换为下划线。隐藏 SSID 可能生成没有标签的文件名，但不会因此自动获得真实 ESSID。
+
+设备使用 4 MB SPIFFS 保存这些文件，不自动分卷，也不自动删除旧文件。空间不足或写入失败时，攻击会停止并在网页和屏幕上报告存储错误。挂载失败时不会自动格式化分区。
+
+## 网页接口
+
+网页使用管理热点提供以下操作：
+
+- `/`：中文控制界面。
+- `/ap-list`：扫描 AP 列表。
+- `/count-clients`：开始客户端探测。
+- `/count-clients/status`：读取客户端探测进度和结果。
+- `/run-attack`：提交攻击配置。
+- `/status`：读取当前攻击状态和结果。
+- `/capture.pcap`：下载当前 PCAP。
+- `/capture.hccapx`：下载当前 HCCAPX 结果。
+- `/pcap-list`：列出所有已保存的 PCAP 和 PMKID 文件。
+- `/capture-file?name=...`：下载指定文件。
+- `/pcap-delete`、`/pcap-delete-all`：删除文件。
+- `/storage-status`：读取 SPIFFS 空间和错误状态。
+- `/logs`：读取最近的设备日志。
+
+客户端探测和攻击会占用 ESP32 的无线电信道，过程中管理热点可能暂时无法访问；完成后的信道恢复行为取决于具体攻击方式，若网页未恢复，请等待设备结束任务后重新连接管理热点。
+
+## 已知限制
+
+- 顶层被动攻击模式尚未实现。
+- 广播去认证是否让客户端掉线取决于客户端实现、AP 配置和信号环境。
+- 隐藏 SSID 的 Beacon 不包含网络名称，抓包文件名中的标签不能替代协议中的 ESSID。
+- ESP32 负责抓包和结果导出，不负责离线密码破解；后续分析需要在授权环境中使用其他工具。
+- 本项目没有自动分卷和自动清理策略，长期抓包前请查看剩余空间。
+
+## 目录结构
+
+```text
+main/                         攻击流程、屏幕 UI 和应用入口
+components/wifi_controller/   AP、STA、扫描、嗅探和客户端探测
+components/frame_analyzer/    EAPOL/PMKID 帧分析
+components/pcap_serializer/   PCAP 和 SPIFFS 文件管理
+components/hccapx_serializer/ HCCAPX 结果序列化
+components/webserver/         HTTP API 和中文网页
+components/display/            AlphaPi ST7789 显示驱动和字库
+components/wsl_bypasser/       原始 802.11 帧发送支持
+doc/                           理论说明、图示和图片
+firmware/、backups/            工作区本地恢复资料，不属于本公开仓库
+```
+
+开发时不要提交抓包文件、完整 Flash 备份、私有固件、设备凭据或访问令牌。安全问题和日志提交规则见 [`SECURITY.md`](SECURITY.md)。
+
+## 贡献
+
+欢迎提交问题和 Pull Request。新增 C/C++ 接口请使用 Doxygen 注释，网页修改后同时提交生成的 `components/webserver/pages/page_index.h`。提交中请说明目标芯片、Flash 容量、构建环境和硬件验证结果。
+
+## 许可证与来源
+
+本项目使用 MIT License，详见 [`LICENSE`](LICENSE)。其中部分组件和设计来自原始 ESP32 Wi-Fi Penetration Tool 及 ESP32-Deauther 相关项目，具体说明见各组件 README 和源文件注释。请保留原作者的版权和许可证声明。
