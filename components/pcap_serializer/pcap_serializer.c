@@ -76,8 +76,9 @@ static bool mount_spiffs(void)
         .base_path = PCAP_BASE_PATH,
         .partition_label = NULL,
         .max_files = 2,
-        /* Never erase existing captures as a side effect of opening the list. */
-        .format_if_mount_failed = false,
+        /* Format a blank or foreign partition so a freshly erased device
+         * recovers without flashing a SPIFFS image by hand. */
+        .format_if_mount_failed = true,
     };
     esp_err_t ret = esp_vfs_spiffs_register(&conf);
     if (ret != ESP_OK) {
