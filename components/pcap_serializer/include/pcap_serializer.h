@@ -1,6 +1,9 @@
 /**
  * @file pcap_serializer.h
  * @brief PCAP serializer that streams captured frames to SPIFFS on Flash.
+ *
+ * @copyright Copyright (c) 2026 swtmaxx
+ * @note MIT licensed, see LICENSE in the repository root.
  */
 #ifndef PCAP_SERIALIZER_H
 #define PCAP_SERIALIZER_H

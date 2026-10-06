@@ -5,6 +5,9 @@
  * Frames are accumulated in a small RAM write buffer and flushed to the
  * capture file whenever it fills, so the WiFi callback never blocks on a
  * Flash write for every single frame.
+ *
+ * @copyright Copyright (c) 2026 swtmaxx
+ * @note MIT licensed, see LICENSE in the repository root.
  */
 #include "pcap_serializer.h"
 
@@ -18,6 +21,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_spiffs.h"
+#include "esp_partition.h"
 #include <dirent.h>
 #include <sys/stat.h>
 #include <stdlib.h>
@@ -68,6 +72,36 @@ static void unlock_serializer(void)
     xSemaphoreGive(pcap_mutex);
 }
 
+/**
+ * @brief Whether the capture partition still looks untouched (all 0xFF).
+ *
+ * Only such a partition is safe to format. A partition that fails to mount but
+ * still holds bytes may contain captures the user has not downloaded yet, and
+ * formatting it would destroy that evidence, so it is reported as a mount
+ * error instead.
+ */
+static bool partition_is_blank(void)
+{
+    const esp_partition_t *part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, NULL);
+    if (part == NULL) return false;
+
+    uint8_t probe[256];
+    size_t checked = 0;
+    /* SPIFFS writes its own structures at the start of the partition, so a
+       small probe tells a blank partition apart from a corrupt one. */
+    while (checked < part->size && checked < 4096) {
+        if (esp_partition_read(part, checked, probe, sizeof(probe)) != ESP_OK) {
+            return false;
+        }
+        for (size_t i = 0; i < sizeof(probe); i++) {
+            if (probe[i] != 0xFF) return false;
+        }
+        checked += sizeof(probe);
+    }
+    return true;
+}
+
 static bool mount_spiffs(void)
 {
     if (spiffs_mounted) return true;
@@ -76,14 +110,26 @@ static bool mount_spiffs(void)
         .base_path = PCAP_BASE_PATH,
         .partition_label = NULL,
         .max_files = 2,
-        /* Format a blank or foreign partition so a freshly erased device
-         * recovers without flashing a SPIFFS image by hand. */
-        .format_if_mount_failed = true,
+        /* Do not format on a plain mount failure: that would silently wipe
+         * captures that may still be needed. */
+        .format_if_mount_failed = false,
     };
     esp_err_t ret = esp_vfs_spiffs_register(&conf);
     if (ret != ESP_OK) {
+        /* A freshly flashed device has an untouched (all-0xFF) partition. It
+           holds nothing, so formatting it makes capturing work out of the box
+           without ever risking stored captures. */
+        if (partition_is_blank()) {
+            ESP_LOGW(TAG, "Capture partition is blank; formatting it for first use");
+            (void) esp_vfs_spiffs_unregister(NULL);
+            conf.format_if_mount_failed = true;
+            ret = esp_vfs_spiffs_register(&conf);
+        }
+    }
+    if (ret != ESP_OK) {
         storage_state = PCAP_STORAGE_MOUNT_ERROR;
-        ESP_LOGE(TAG, "Failed to mount SPIFFS (%s)", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to mount SPIFFS (%s); existing captures were left untouched",
+                 esp_err_to_name(ret));
         return false;
     }
     spiffs_mounted = true;
@@ -534,10 +580,10 @@ bool pcap_serializer_list_page(pcap_file_info_t *out, unsigned max,
         struct stat st;
         if (!build_full_path(full, sizeof(full), ent->d_name) ||
             stat(full, &st) != 0 || st.st_size < 0) {
-            closedir(dir);
-            free(all);
-            unlock_serializer();
-            return false;
+            /* A file can vanish between the counting pass and this pass (for
+               example while delete-all runs): skip it rather than failing the
+               whole listing. */
+            continue;
         }
         strncpy(all[written].name, ent->d_name, sizeof(all[written].name) - 1);
         all[written].name[sizeof(all[written].name) - 1] = '\0';
