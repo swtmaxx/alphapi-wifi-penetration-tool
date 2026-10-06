@@ -51,13 +51,11 @@ void attack_dos_stop() {
             attack_method_broadcast_stop();
             break;
         case ATTACK_DOS_METHOD_ROGUE_AP:
-            wifictl_mgmt_ap_start();
-            wifictl_restore_ap_mac();
+            attack_method_rogueap_stop();
             break;
         case ATTACK_DOS_METHOD_COMBINE_ALL:
             attack_method_broadcast_stop();
-            wifictl_mgmt_ap_start();
-            wifictl_restore_ap_mac();
+            attack_method_rogueap_stop();
             break;
         default:
             ESP_LOGE(TAG, "Unknown attack method! Attack may not be stopped properly.");

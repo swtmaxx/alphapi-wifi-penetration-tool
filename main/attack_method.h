@@ -9,6 +9,7 @@
 #ifndef ATTACK_METHOD_H
 #define ATTACK_METHOD_H
 
+#include <stdbool.h>
 #include "esp_wifi_types.h"
 
 /**
@@ -32,5 +33,21 @@ void attack_method_broadcast_stop();
  * @param ap_record target AP that will be cloned/duplicated
  */
 void attack_method_rogueap(const wifi_ap_record_t *ap_record);
+
+/**
+ * @brief Whether the AP interface is currently configured as a rogue clone.
+ *
+ * While a rogue AP is active the broadcast helper must not reconfigure the AP
+ * interface, otherwise the clone is replaced by the management AP.
+ */
+bool attack_method_rogueap_active(void);
+
+/**
+ * @brief Stops a running rogue AP and restores the management AP.
+ *
+ * Restores the original AP MAC address and the management AP configuration.
+ * Safe to call when no rogue AP is running.
+ */
+void attack_method_rogueap_stop(void);
 
 #endif

