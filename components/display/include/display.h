@@ -1,6 +1,9 @@
 /**
  * @file display.h
  * @brief ST7789 SPI display driver for AlphaPi One S v1.7
+ *
+ * @copyright Copyright (c) 2026 swtmaxx
+ * @note MIT licensed, see LICENSE in the repository root.
  */
 #ifndef DISPLAY_H
 #define DISPLAY_H

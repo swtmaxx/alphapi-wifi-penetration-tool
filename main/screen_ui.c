@@ -1,6 +1,9 @@
 /**
  * @file screen_ui.c
  * @brief Chinese standalone UI for the AlphaPi display.
+ *
+ * @copyright Copyright (c) 2026 swtmaxx
+ * @note MIT licensed, see LICENSE in the repository root.
  */
 #include "screen_ui.h"
 

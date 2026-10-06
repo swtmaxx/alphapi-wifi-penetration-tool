@@ -1,6 +1,9 @@
 /**
  * @file screen_ui.h
  * @brief Native ST7789 status UI for the penetration tool.
+ *
+ * @copyright Copyright (c) 2026 swtmaxx
+ * @note MIT licensed, see LICENSE in the repository root.
  */
 #ifndef SCREEN_UI_H
 #define SCREEN_UI_H

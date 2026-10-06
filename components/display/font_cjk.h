@@ -9,6 +9,11 @@
  * Bitmap layout per glyph: 32 bytes, 16 rows x 16 pixels, 2 bytes per row.
  * The 16-bit row value uses bit `col` for the pixel at column `col`, which
  * matches the framebuffer convention in display.c.
+ *
+ * @note Provenance: derived from the HZK16 bitmap font shipped with the AlphaPi
+ *       factory firmware. HZK16 bitmaps circulate as public-domain material, but
+ *       the original licence is not documented; confirm it before redistributing
+ *       this file in a commercial context.
  */
 #ifndef FONT_CJK_H
 #define FONT_CJK_H

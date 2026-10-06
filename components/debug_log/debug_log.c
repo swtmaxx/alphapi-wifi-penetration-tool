@@ -1,6 +1,9 @@
 /**
  * @file debug_log.c
  * @brief In-memory ESP-IDF log ring buffer for devices without a console.
+ *
+ * @copyright Copyright (c) 2026 swtmaxx
+ * @note MIT licensed, see LICENSE in the repository root.
  */
 #include "debug_log.h"
 

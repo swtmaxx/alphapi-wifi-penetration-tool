@@ -6,6 +6,9 @@
  * transaction so the render task never blocks on thousands of bus writes.
  *
  * Pin map was extracted from the factory MicroPython firmware (hal.gpio_map).
+ *
+ * @copyright Copyright (c) 2026 swtmaxx
+ * @note MIT licensed, see LICENSE in the repository root.
  */
 #include "display.h"
 #include "font5x7.h"

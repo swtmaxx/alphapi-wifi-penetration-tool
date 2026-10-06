@@ -1,6 +1,9 @@
 /**
  * @file debug_log.h
  * @brief Keeps a small in-memory copy of ESP-IDF log output.
+ *
+ * @copyright Copyright (c) 2026 swtmaxx
+ * @note MIT licensed, see LICENSE in the repository root.
  */
 #ifndef DEBUG_LOG_H
 #define DEBUG_LOG_H
