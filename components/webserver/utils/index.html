@@ -357,7 +357,12 @@
         document.getElementById("result").style.display = "block";
         document.getElementById("result-meta").innerHTML = "存储错误<br>抓包文件";
         var message = content_size ? new TextDecoder("utf-8").decode(content.subarray(0, content_size)) : "抓包文件保存失败";
-        document.getElementById("result-content").innerHTML = "<p class='badge err'>" + message + "</p>";
+        var container = document.getElementById("result-content");
+        container.textContent = "";
+        var note = document.createElement("p");
+        note.className = "badge err";
+        note.textContent = message;
+        container.appendChild(note);
         loadCaptures();
         loadStorageStatus();
     }
@@ -376,17 +381,24 @@
                     var td_ssid = document.createElement('td');
                     var td_rssi = document.createElement('td');
                     var td_bssid = document.createElement('td');
-                    td_ssid.innerHTML = new TextDecoder("utf-8").decode(byteArray.subarray(i + 0, i + 32));
+                    /* SSIDs come from nearby APs, i.e. from an untrusted source:
+                       assign them as text so they can never become markup. */
+                    td_ssid.textContent = new TextDecoder("utf-8").decode(byteArray.subarray(i + 0, i + 32));
                     tr.appendChild(td_ssid);
+                    var bssid_text = "";
                     for(let j = 0; j < 6; j++){
-                        td_bssid.innerHTML += uint8ToHex(byteArray[i + 33 + j]) + ":";
+                        bssid_text += uint8ToHex(byteArray[i + 33 + j]) + ":";
                     }
+                    td_bssid.textContent = bssid_text;
                     tr.appendChild(td_bssid);
-                    td_rssi.innerHTML = byteArray[i + 39] - 255;
+                    td_rssi.textContent = byteArray[i + 39] - 255;
                     tr.appendChild(td_rssi);
                     var td_clients = document.createElement('td');
                     var cc = byteArray[i + 40];
-                    td_clients.innerHTML = '<span class="badge' + (cc > 0 ? ' ok' : '') + '">' + cc + '</span>';
+                    var badge = document.createElement('span');
+                    badge.className = cc > 0 ? 'badge ok' : 'badge';
+                    badge.textContent = cc;
+                    td_clients.appendChild(badge);
                     tr.appendChild(td_clients);
                     document.getElementById("ap-list").appendChild(tr);
                 }
@@ -436,42 +448,62 @@
         oReq.open("HEAD", "http://192.168.4.1/reset", true);
         oReq.send();
     }
+    /* The result buffer is written by the firmware (main/attack_pmkid.c) as
+       [0..5] MAC_STA, [6..11] MAC_AP, [12] SSID length, [13..] SSID, PMKIDs. */
     function resultPmkid(attack_content, attack_content_size){
         var mac_ap = "";
         var mac_sta = "";
         var ssid = "";
         var ssid_text = "";
-        var pmkid = "";
         var index = 0;
-        for(let i = 0; i < 6; i = i + 1) {
-            mac_ap += uint8ToHex(attack_content[index + i]);
-        }
-        index = index + 6;
         for(let i = 0; i < 6; i = i + 1) {
             mac_sta += uint8ToHex(attack_content[index + i]);
         }
         index = index + 6;
-        for(let i = 0; i < attack_content[index]; i = i + 1) {
+        for(let i = 0; i < 6; i = i + 1) {
+            mac_ap += uint8ToHex(attack_content[index + i]);
+        }
+        index = index + 6;
+        var ssid_len = Math.min(attack_content[index] || 0, 32);
+        for(let i = 0; i < ssid_len; i = i + 1) {
             ssid += uint8ToHex(attack_content[index + 1 + i]);
             ssid_text += String.fromCharCode(attack_content[index + 1 + i]);
         }
-        index = index + attack_content[index] + 1;
-        var pmkid_cnt = 0;
-        for(let i = 0; i < attack_content_size - index; i = i + 1) {
-            if((i % 16) == 0){
-                pmkid += "<br>";
-                pmkid += "</code>PMKID #" + pmkid_cnt + ": <code>";
-                pmkid_cnt += 1;
+        index = index + ssid_len + 1;
+
+        /* Each 16 bytes is one PMKID. Keep the raw hex separate from any
+           display markup so the hashcat line holds real values only. */
+        var pmkids = [];
+        for(let i = 0; i + 16 <= attack_content_size - index; i = i + 16) {
+            var one = "";
+            for(let j = 0; j < 16; j = j + 1) {
+                one += uint8ToHex(attack_content[index + i + j]);
             }
-            pmkid += uint8ToHex(attack_content[index + i]);
+            pmkids.push(one);
         }
-        document.getElementById("result-content").innerHTML = "";
-        document.getElementById("result-content").innerHTML += "AP 地址：<code>" + mac_ap + "</code><br>";
-        document.getElementById("result-content").innerHTML += "客户端地址：<code>" + mac_sta + "</code><br>";
-        document.getElementById("result-content").innerHTML += "网络名称：<code>" + ssid + "</code> (" + ssid_text + ")";
-        document.getElementById("result-content").innerHTML += "<code>" + pmkid + "</code><br>";
-        document.getElementById("result-content").innerHTML += "<br>Hashcat 格式："
-        document.getElementById("result-content").innerHTML += "<code>" + pmkid + "*" + mac_ap + "*" + mac_sta  + "*" + ssid  + "</code><br>";
+
+        var container = document.getElementById("result-content");
+        container.textContent = "";
+        /* Values come from the target network (SSID) or from the capture, so
+           they are inserted as text, never as HTML. */
+        function appendLine(label, value) {
+            container.appendChild(document.createTextNode(label));
+            var node = document.createElement("code");
+            node.textContent = value;
+            container.appendChild(node);
+            container.appendChild(document.createElement("br"));
+        }
+        appendLine("AP 地址：", mac_ap);
+        appendLine("客户端地址：", mac_sta);
+        appendLine("网络名称：", ssid + " (" + ssid_text + ")");
+        for(let i = 0; i < pmkids.length; i = i + 1) {
+            appendLine("PMKID #" + i + "：", pmkids[i]);
+        }
+        if(pmkids.length > 0) {
+            container.appendChild(document.createElement("br"));
+            appendLine("Hashcat 格式：",
+                       pmkids[0] + "*" + mac_ap + "*" + mac_sta + "*" + ssid);
+        }
     }
     function resultHandshake(attack_content, attack_content_size){
         document.getElementById("result-content").innerHTML = "";
@@ -498,7 +530,11 @@
                 handshakes += "\n";
             }
         }
-        document.getElementById("result-content").innerHTML += "<pre><code>" + handshakes + "</code></pre>";
+        var pre = document.createElement("pre");
+        var code = document.createElement("code");
+        code.textContent = handshakes;
+        pre.appendChild(code);
+        document.getElementById("result-content").appendChild(pre);
     }
     function countClients(){
         var btn = event && event.target ? event.target : null;
@@ -533,10 +569,23 @@
             list.forEach(function(f){
                 var row = document.createElement("div");
                 row.className = "file-row";
-                row.innerHTML = "<span><code>" + f.name + "</code> <span class='badge'>" + formatSize(f.size) + "</span></span>";
+                var label = document.createElement("span");
+                var code = document.createElement("code");
+                code.textContent = f.name;
+                var size = document.createElement("span");
+                size.className = "badge";
+                size.textContent = formatSize(f.size);
+                label.appendChild(code);
+                label.appendChild(document.createTextNode(" "));
+                label.appendChild(size);
+                row.appendChild(label);
                 var a = document.createElement("a");
                 a.href = "capture-file?name=" + encodeURIComponent(f.name);
-                a.innerHTML = "<button type='button' class='btn-secondary'>下载</button>";
+                var button = document.createElement("button");
+                button.type = "button";
+                button.className = "btn-secondary";
+                button.textContent = "下载";
+                a.appendChild(button);
                 row.appendChild(a);
                 box.appendChild(row);
             });

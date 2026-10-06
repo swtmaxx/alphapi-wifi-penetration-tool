@@ -36,6 +36,19 @@
 static const char* TAG = "webserver";
 ESP_EVENT_DEFINE_BASE(WEBSERVER_EVENTS);
 
+/**
+ * @brief Headers that stop a browser from reinterpreting a response.
+ *
+ * Must be called before the response body is sent.
+ */
+static void set_security_headers(httpd_req_t *req)
+{
+    httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
+    httpd_resp_set_hdr(req, "X-Frame-Options", "DENY");
+    httpd_resp_set_hdr(req, "Referrer-Policy", "no-referrer");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+}
+
 static const char *storage_state_name(pcap_storage_state_t state)
 {
     switch (state) {
@@ -56,6 +69,16 @@ static const char *storage_state_name(pcap_storage_state_t state)
  * @{
  */
 static esp_err_t uri_root_get_handler(httpd_req_t *req) {
+    set_security_headers(req);
+    /* The UI talks only to this device and needs no external resource, so keep
+       the policy tight: even if injected markup ever reaches the DOM, it cannot
+       load a remote script or exfiltrate captures. 'unsafe-inline' is required
+       because the page ships its script and style inline. */
+    httpd_resp_set_hdr(req, "Content-Security-Policy",
+                       "default-src 'none'; script-src 'unsafe-inline'; "
+                       "style-src 'unsafe-inline'; img-src 'none'; "
+                       "connect-src 'self'; base-uri 'none'; "
+                       "form-action 'none'; frame-ancestors 'none'");
     /* charset is required so the browser renders the Chinese UI correctly. */
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
@@ -121,6 +144,7 @@ static esp_err_t uri_ap_list_get_handler(httpd_req_t *req) {
     // 33 SSID + 6 BSSID + 1 RSSI + 1 client count
     char resp_chunk[41];
 
+    set_security_headers(req);
     ESP_ERROR_CHECK(httpd_resp_set_type(req, HTTPD_TYPE_OCTET));
     for (unsigned i = 0; i < ap_records.count; i++) {
         memcpy(resp_chunk, ap_records.records[i].ssid, 33);
@@ -150,7 +174,19 @@ static httpd_uri_t uri_ap_list_get = {
  */
 static esp_err_t uri_run_attack_post_handler(httpd_req_t *req) {
     attack_request_t attack_request;
-    httpd_req_recv(req, (char *)&attack_request, sizeof(attack_request_t));
+    /* The body is exactly one attack_request_t. A shorter body would leave
+       uninitialised stack bytes in the request that gets posted to the attack
+       handler, so reject it instead of acting on garbage. */
+    int received = httpd_req_recv(req, (char *)&attack_request, sizeof(attack_request_t));
+    if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+        return httpd_resp_send_408(req);
+    }
+    if (received != (int) sizeof(attack_request_t)) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "攻击参数不完整");
+    }
+    if (attack_request.type > ATTACK_TYPE_DOS) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "未知攻击类型");
+    }
     esp_err_t res = httpd_resp_send(req, NULL, 0);
     ESP_ERROR_CHECK(esp_event_post(WEBSERVER_EVENTS, WEBSERVER_EVENT_ATTACK_REQUEST, &attack_request, sizeof(attack_request_t), portMAX_DELAY));
     return res;
@@ -179,6 +215,7 @@ static esp_err_t uri_status_get_handler(httpd_req_t *req) {
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "status unavailable");
     }
 
+    set_security_headers(req);
     esp_err_t res = httpd_resp_set_type(req, HTTPD_TYPE_OCTET);
     if (res != ESP_OK) {
         attack_free_status_snapshot(&attack_status);
@@ -218,6 +255,7 @@ static httpd_uri_t uri_status_get = {
  */
 static esp_err_t uri_capture_pcap_get_handler(httpd_req_t *req){
     ESP_LOGD(TAG, "Providing PCAP file...");
+    set_security_headers(req);
     httpd_resp_set_type(req, HTTPD_TYPE_OCTET);
 
     unsigned total = pcap_serializer_get_size();
@@ -258,8 +296,15 @@ static httpd_uri_t uri_capture_pcap_get = {
  */
 static esp_err_t uri_capture_hccapx_get_handler(httpd_req_t *req){
     ESP_LOGD(TAG, "Providing HCCAPX file...");
+    /* hccapx_serializer_get() returns NULL until a usable handshake has been
+       assembled: never hand a NULL buffer to the HTTP layer. */
+    hccapx_t *hccapx = hccapx_serializer_get();
+    if (hccapx == NULL) {
+        return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "尚未抓到可用握手");
+    }
+    set_security_headers(req);
     ESP_ERROR_CHECK(httpd_resp_set_type(req, HTTPD_TYPE_OCTET));
-    return httpd_resp_send(req, (char *) hccapx_serializer_get(), sizeof(hccapx_t));
+    return httpd_resp_send(req, (char *) hccapx, sizeof(hccapx_t));
 }
 
 static httpd_uri_t uri_capture_hccapx_get = {
@@ -288,6 +333,7 @@ static esp_err_t uri_pcap_list_get_handler(httpd_req_t *req) {
     }
 
     httpd_resp_set_type(req, "application/json; charset=utf-8");
+    set_security_headers(req);
     esp_err_t res = httpd_resp_send_chunk(req, "[", 1);
     bool first = true;
     unsigned offset = 0;
@@ -335,6 +381,7 @@ static esp_err_t uri_storage_status_get_handler(httpd_req_t *req) {
                                    "无法读取抓包存储状态");
     }
     httpd_resp_set_type(req, "application/json; charset=utf-8");
+    set_security_headers(req);
     return httpd_resp_send(req, body, len);
 }
 
@@ -376,6 +423,7 @@ static esp_err_t uri_capture_file_get_handler(httpd_req_t *req) {
     unsigned total = info.size;
 
     httpd_resp_set_type(req, HTTPD_TYPE_OCTET);
+    set_security_headers(req);
     char disposition[PCAP_FILENAME_MAX + 32];
     snprintf(disposition, sizeof(disposition), "attachment; filename=\"%s\"", name);
     httpd_resp_set_hdr(req, "Content-Disposition", disposition);
@@ -487,6 +535,7 @@ static esp_err_t uri_count_clients_status_get_handler(httpd_req_t *req)
     char body[32];
     snprintf(body, sizeof(body), "{\"active\":%s}",
              wifictl_client_counting_active() ? "true" : "false");
+    set_security_headers(req);
     esp_err_t res = httpd_resp_set_type(req, "application/json; charset=utf-8");
     if (res != ESP_OK) return res;
     return httpd_resp_sendstr(req, body);
@@ -510,8 +559,8 @@ static esp_err_t uri_logs_get_handler(httpd_req_t *req)
     }
 
     size_t length = debug_log_read(buffer, DEBUG_LOG_EXPORT_MAX);
+    set_security_headers(req);
     esp_err_t res = httpd_resp_set_type(req, "text/plain; charset=utf-8");
-    if (res == ESP_OK) res = httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     if (res == ESP_OK) res = httpd_resp_send(req, buffer, length);
     free(buffer);
     return res;
