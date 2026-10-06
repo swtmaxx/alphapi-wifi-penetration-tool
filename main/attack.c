@@ -55,10 +55,6 @@ static void status_unlock(void)
     }
 }
 
-const attack_status_t *attack_get_status() {
-    return &attack_status;
-}
-
 bool attack_get_status_snapshot(attack_status_t *snapshot)
 {
     if (snapshot == NULL) return false;
@@ -145,13 +141,15 @@ static void success_stop_task(void *arg)
     bool current = (attack_status.state == RUNNING) &&
                    (attack_generation == my_generation);
     type = attack_status.type;
+    uint8_t state_now = attack_status.state;
+    uint32_t generation_now = attack_generation;
     status_unlock();
 
     if (!current) {
         /* Either already finished, or a newer attack owns the state now.
            Release the latch so a later signal can still try to stop. */
-        last_bail_state = attack_status.state;
-        last_bail_gen = attack_generation;
+        last_bail_state = state_now;
+        last_bail_gen = generation_now;
         success_latched = false;
         vTaskDelete(NULL);
         return;

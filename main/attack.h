@@ -65,17 +65,13 @@ typedef struct {
 } attack_status_t;
 
 /**
- * @brief Returns pointer to attack_status_t structure.
- * 
- * @return const attack_status_t*  pointer to the status strucutre
- */
-const attack_status_t *attack_get_status();
-
-/**
  * @brief Copy the current attack status and result content.
  *
- * The returned content belongs to the snapshot and must be released with
- * attack_free_status_snapshot().
+ * Returns a consistent copy; the content belongs to the snapshot and must be
+ * released with attack_free_status_snapshot().
+ *
+ * @param snapshot caller-owned destination
+ * @return true when the snapshot was taken
  */
 bool attack_get_status_snapshot(attack_status_t *snapshot);
 

@@ -29,13 +29,6 @@ typedef struct {
 esp_err_t wifictl_scan_nearby_aps(void);
 
 /**
- * @brief Returns current list of scanned APs.
- * 
- * @return const wifictl_ap_records_t* 
- */
-const wifictl_ap_records_t *wifictl_get_ap_records();
-
-/**
  * @brief Copies the latest AP records into caller-owned storage.
  *
  * @return true when the snapshot was copied successfully.

@@ -3,6 +3,9 @@
  * @brief Counts online clients per AP by passive sniffing.
  *
  * See client_counter.h for the detection rationale and limitations.
+ *
+ * @copyright Copyright (c) 2026 swtmaxx
+ * @note MIT licensed, see LICENSE in the repository root.
  */
 #include "client_counter.h"
 

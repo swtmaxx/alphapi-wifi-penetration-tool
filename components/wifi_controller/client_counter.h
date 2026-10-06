@@ -7,10 +7,15 @@
  * probe response, ...). Counting unique source MACs per destination BSSID
  * therefore approximates the number of active clients behind each AP.
  *
- * @note Promiscuous sniffing requires the management AP to be down, so the
- *       management AP is stopped while counting and restarted afterwards.
+ * @note Promiscuous sniffing takes the radio off the management AP channel, so
+ *       the management AP is unavailable while counting and is reconfigured
+ *       afterwards. Any STA that was connected to it is dropped when the
+ *       sniffer starts.
  * @note The result is an estimate limited to clients that transmitted during
  *       the observation window.
+ *
+ * @copyright Copyright (c) 2026 swtmaxx
+ * @note MIT licensed, see LICENSE in the repository root.
  */
 #ifndef CLIENT_COUNTER_H
 #define CLIENT_COUNTER_H

@@ -1,3 +1,10 @@
+/**
+ * @file wifi_controller.c
+ * @brief Wi-Fi controller: AP/STA configuration, channel control and MAC handling.
+ *
+ * @copyright Copyright (c) 2026 swtmaxx
+ * @note MIT licensed, see LICENSE in the repository root.
+ */
 #include "wifi_controller.h"
 
 #include <stdio.h>
@@ -75,6 +82,7 @@ void wifictl_mgmt_ap_start(){
             .ssid = CONFIG_MGMT_AP_SSID,
             .ssid_len = strlen(CONFIG_MGMT_AP_SSID),
             .password = CONFIG_MGMT_AP_PASSWORD,
+            .channel = CONFIG_MGMT_AP_CHANNEL,
             .max_connection = CONFIG_MGMT_AP_MAX_CONNECTIONS,
             .authmode = WIFI_AUTH_WPA2_PSK
         },

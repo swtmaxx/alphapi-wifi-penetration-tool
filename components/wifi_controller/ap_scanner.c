@@ -69,10 +69,6 @@ esp_err_t wifictl_scan_nearby_aps(void)
     return ESP_OK;
 }
 
-const wifictl_ap_records_t *wifictl_get_ap_records() {
-    return &ap_records;
-}
-
 bool wifictl_copy_ap_records(wifictl_ap_records_t *out)
 {
     if (out == NULL || !ensure_scanner_mutex()) return false;
