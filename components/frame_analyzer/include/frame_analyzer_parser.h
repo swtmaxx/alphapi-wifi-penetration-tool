@@ -26,32 +26,44 @@ bool is_frame_bssid_matching(wifi_promiscuous_pkt_t *frame, uint8_t *bssid);
 /**
  * @brief Parses EAPoL packet from given frame.
  * 
- * @param frame 
+ * @param frame data frame as captured
+ * @param frame_len number of valid bytes in \c frame (rx_ctrl.sig_len)
+ * @param eapol_len out: number of valid bytes from the EAPOL header to the end
+ *                  of the captured frame, or 0 when nothing was parsed. Pass
+ *                  this to parse_eapol_key_packet()/parse_pmkid().
  * @return eapol_packet_t* if parsing successful 
  * @return \c NULL if no EAPoL packet was found
  * @return \c NULL if frame is protected
+ * @return \c NULL if the frame is too short to hold the parsed headers
  */
-eapol_packet_t *parse_eapol_packet(data_frame_t *frame);
+eapol_packet_t *parse_eapol_packet(data_frame_t *frame, unsigned frame_len,
+                                   unsigned *eapol_len);
 
 /**
  * @brief Parses EAPoL-Key packet from EAPoL packet
  * 
  * @note result does not include EAPoL header
  * @param eapol_packet 
+ * @param eapol_len valid bytes from the EAPOL header, as returned by
+ *                  parse_eapol_packet()
  * @return eapol_key_packet_t* if parsing successful
  * @return \c NULL if no EAPoL-Key packet found
+ * @return \c NULL if the captured bytes do not cover the fixed descriptor
  */
-eapol_key_packet_t *parse_eapol_key_packet(eapol_packet_t *eapol_packet);
+eapol_key_packet_t *parse_eapol_key_packet(eapol_packet_t *eapol_packet,
+                                           unsigned eapol_len);
 
 /**
  * @brief Parses PMKIDs from EAPoL-Key packet
  * 
  * @param eapol_key 
+ * @param eapol_len valid bytes from the EAPOL header, as returned by
+ *                  parse_eapol_packet()
  * @return pmkid_item_t* linked list of PMKIDs if parsing successful
  * @return \c NULL if no key data present
  * @return \c NULL if key data are encrypted
  * @return \c NULL parsing fails
  */
-pmkid_item_t *parse_pmkid(eapol_key_packet_t *eapol_key);
+pmkid_item_t *parse_pmkid(eapol_key_packet_t *eapol_key, unsigned eapol_len);
 
 #endif

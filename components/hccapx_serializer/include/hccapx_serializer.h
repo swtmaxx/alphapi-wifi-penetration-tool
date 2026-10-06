@@ -58,7 +58,8 @@ hccapx_t *hccapx_serializer_get();
  * frame will be skipped and error message will be printed.
  * 
  * @param frame data frame with EAPoL-Key packet
+ * @param frame_len number of valid bytes in frame (rx_ctrl.sig_len)
  */
-void hccapx_serializer_add_frame(data_frame_t *frame);
+void hccapx_serializer_add_frame(data_frame_t *frame, unsigned frame_len);
 
 #endif

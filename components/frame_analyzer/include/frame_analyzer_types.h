@@ -10,6 +10,7 @@
 #define FRAME_ANALYZER_TYPES_H
 
 #include <stdint.h>
+#include <stddef.h>
 
 /**
  * @see Ref: 802.1X-2020 [11.1.4]
@@ -148,6 +149,23 @@ typedef struct __attribute__((__packed__)) {
     uint32_t data_type:8;
     uint8_t data[];
 } key_data_field_t;
+
+/**
+ * Byte offset of key_mic inside a captured EAPOL frame (EAPOL header included).
+ *
+ * Used to zero the MIC in the HCCAPX copy so hashcat can recompute it.
+ */
+#define EAPOL_KEY_MIC_OFFSET \
+    (sizeof(eapol_packet_header_t) + offsetof(eapol_key_packet_t, key_mic))
+
+/**
+ * Byte offset of key_data inside a captured EAPOL frame (EAPOL header included).
+ *
+ * All fixed descriptor fields end here, so a frame shorter than this cannot be
+ * a valid EAPOL-Key packet and must not be dereferenced.
+ */
+#define EAPOL_KEY_DATA_OFFSET \
+    (sizeof(eapol_packet_header_t) + offsetof(eapol_key_packet_t, key_data))
 
 /**
  * @brief linked list of PMKIDs

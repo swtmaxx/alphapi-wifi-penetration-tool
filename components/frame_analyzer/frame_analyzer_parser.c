@@ -47,39 +47,68 @@ void print_mac_address(const uint8_t *a){
 }
 
 bool is_frame_bssid_matching(wifi_promiscuous_pkt_t *frame, uint8_t *bssid) {
+    /* addr3 lives at offset 16 of the 24-byte fixed header; a shorter capture
+       (or a control frame) must not be read. */
+    if (frame == NULL || bssid == NULL) return false;
+    if (frame->rx_ctrl.sig_len < sizeof(data_frame_mac_header_t)) return false;
     data_frame_mac_header_t *mac_header = (data_frame_mac_header_t *) frame->payload;
     return memcmp(mac_header->addr3, bssid, 6) == 0;
 }
 
-eapol_packet_t *parse_eapol_packet(data_frame_t *frame) {
-    uint8_t *frame_buffer = frame->body;
+eapol_packet_t *parse_eapol_packet(data_frame_t *frame, unsigned frame_len,
+                                  unsigned *eapol_len) {
+    if (eapol_len != NULL) *eapol_len = 0;
+    if (frame == NULL || frame_len < sizeof(data_frame_mac_header_t)) {
+        ESP_LOGV(TAG, "Frame too short (%u bytes) to hold a data header", frame_len);
+        return NULL;
+    }
 
     if(frame->mac_header.frame_control.protected_frame == 1) {
         ESP_LOGV(TAG, "Protected frame, skipping...");
         return NULL;
     }
 
+    unsigned offset = sizeof(data_frame_mac_header_t);
     if(frame->mac_header.frame_control.subtype > 7) {
         ESP_LOGV(TAG, "QoS data frame");
         // Skipping QoS field (2 bytes)
-        frame_buffer += 2;
+        offset += 2;
     }
 
-    // Skipping LLC SNAP header (6 bytes)
-    frame_buffer += sizeof(llc_snap_header_t);
+    /* LLC/SNAP header (6 bytes) followed by the 2-byte EtherType. */
+    if (frame_len < offset + sizeof(llc_snap_header_t) + sizeof(uint16_t)) {
+        ESP_LOGV(TAG, "Frame truncated before the EtherType (%u bytes)", frame_len);
+        return NULL;
+    }
+
+    const uint8_t *ether_type_field =
+        (const uint8_t *) frame + offset + sizeof(llc_snap_header_t);
 
     // Check if frame is type of EAPoL
-    if(ntohs(*(uint16_t *) frame_buffer) == ETHER_TYPE_EAPOL) {
+    if(ntohs(*(const uint16_t *) ether_type_field) == ETHER_TYPE_EAPOL) {
+        unsigned available = frame_len - offset - sizeof(llc_snap_header_t) -
+                             sizeof(uint16_t);
+        if (available < sizeof(eapol_packet_header_t)) {
+            ESP_LOGV(TAG, "EAPOL header truncated (%u bytes)", available);
+            return NULL;
+        }
         ESP_LOGD(TAG, "EAPOL packet");
-        frame_buffer += 2;
-        return (eapol_packet_t *) frame_buffer; 
+        if (eapol_len != NULL) *eapol_len = available;
+        return (eapol_packet_t *) (ether_type_field + sizeof(uint16_t));
     }
     return NULL;
 }
 
-eapol_key_packet_t *parse_eapol_key_packet(eapol_packet_t *eapol_packet){
+eapol_key_packet_t *parse_eapol_key_packet(eapol_packet_t *eapol_packet,
+                                          unsigned eapol_len){
+    if (eapol_packet == NULL) return NULL;
     if(eapol_packet->header.packet_type != EAPOL_KEY){
         ESP_LOGD(TAG, "Not an EAPoL-Key packet.");
+        return NULL;
+    }
+    if (eapol_len < EAPOL_KEY_DATA_OFFSET) {
+        ESP_LOGD(TAG, "EAPoL-Key truncated (%u < %u bytes)",
+                 eapol_len, (unsigned) EAPOL_KEY_DATA_OFFSET);
         return NULL;
     }
     return (eapol_key_packet_t *) eapol_packet->packet_body;
@@ -145,7 +174,8 @@ static pmkid_item_t *parse_pmkid_from_key_data(uint8_t *key_data, const uint16_t
     return pmkid_item_head;
 }
 
-pmkid_item_t *parse_pmkid(eapol_key_packet_t *eapol_key){
+pmkid_item_t *parse_pmkid(eapol_key_packet_t *eapol_key, unsigned eapol_len){
+    if (eapol_key == NULL) return NULL;
     if(eapol_key->key_data_length == 0){
         ESP_LOGD(TAG, "Empty Key Data");
         return NULL;
@@ -156,5 +186,19 @@ pmkid_item_t *parse_pmkid(eapol_key_packet_t *eapol_key){
         return NULL;
     }
 
-    return parse_pmkid_from_key_data(eapol_key->key_data, ntohs(eapol_key->key_data_length));
+    /* key_data_length is attacker-controlled: it must not point past the bytes
+       that were actually captured. */
+    if (eapol_len < EAPOL_KEY_DATA_OFFSET) {
+        ESP_LOGD(TAG, "EAPoL-Key too short for key data (%u bytes)", eapol_len);
+        return NULL;
+    }
+    unsigned available = eapol_len - EAPOL_KEY_DATA_OFFSET;
+    unsigned key_data_length = ntohs(eapol_key->key_data_length);
+    if (key_data_length > available) {
+        ESP_LOGD(TAG, "Key Data claims %u bytes but only %u were captured",
+                 key_data_length, available);
+        return NULL;
+    }
+
+    return parse_pmkid_from_key_data(eapol_key->key_data, key_data_length);
 }

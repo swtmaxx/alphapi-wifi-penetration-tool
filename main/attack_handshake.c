@@ -66,7 +66,8 @@ static void eapolkey_frame_handler(void *args, esp_event_base_t event_base, int3
         attack_signal_storage_error(pcap_error_message());
         return;
     }
-    hccapx_serializer_add_frame((data_frame_t *) frame->payload);
+    hccapx_serializer_add_frame((data_frame_t *) frame->payload,
+                                frame->rx_ctrl.sig_len);
 
     /* message_pair leaves 255 once a usable handshake is assembled, so the
        capture can stop by itself instead of waiting out the timeout. */
@@ -166,20 +167,8 @@ void attack_handshake_start(attack_config_t *attack_config){
 }
 
 void attack_handshake_stop(){
-    switch(method){
-        case ATTACK_HANDSHAKE_METHOD_BROADCAST:
-            attack_method_broadcast_stop();
-            break;
-        case ATTACK_HANDSHAKE_METHOD_ROGUE_AP:
-            wifictl_mgmt_ap_start();
-            wifictl_restore_ap_mac();
-            break;
-        case ATTACK_HANDSHAKE_METHOD_PASSIVE:
-            // No actions required.
-            break;
-        default:
-            ESP_LOGE(TAG, "Unknown attack method! Attack may not be stopped properly.");
-    }
+    /* Stop the radio work first: the sniffer must be off before the AP
+       interface is reconfigured back into the management AP. */
     wifictl_sniffer_stop();
     if (analyzer_started) frame_analyzer_capture_stop();
     esp_event_loop_handle_t loop = wifictl_sniffer_event_loop();
@@ -198,6 +187,20 @@ void attack_handshake_stop(){
     analyzer_started = false;
     if (!pcap_serializer_deinit()) {
         ESP_LOGE(TAG, "PCAP capture did not flush cleanly: %s", pcap_error_message());
+    }
+
+    switch(method){
+        case ATTACK_HANDSHAKE_METHOD_BROADCAST:
+            attack_method_broadcast_stop();
+            break;
+        case ATTACK_HANDSHAKE_METHOD_ROGUE_AP:
+            attack_method_rogueap_stop();
+            break;
+        case ATTACK_HANDSHAKE_METHOD_PASSIVE:
+            // No actions required.
+            break;
+        default:
+            ESP_LOGE(TAG, "Unknown attack method! Attack may not be stopped properly.");
     }
     ap_record = NULL;
     method = -1;
