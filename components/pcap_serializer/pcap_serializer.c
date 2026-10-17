@@ -22,6 +22,8 @@
 #include "esp_err.h"
 #include "esp_spiffs.h"
 #include "esp_partition.h"
+/* CONFIG_SPIFFS_OBJ_NAME_LEN: the file-name budget depends on it. */
+#include "sdkconfig.h"
 #include <dirent.h>
 #include <sys/stat.h>
 #include <stdlib.h>
@@ -35,12 +37,20 @@ static const char *TAG = "pcap_serializer";
 #define PCAP_BASE_PATH   "/pcap"
 #define PCAP_FILE_PATH   PCAP_BASE_PATH "/capture.pcap"
 #define PCAP_FILE_PATH_FMT PCAP_BASE_PATH "/capture_%03u.pcap"
-/* Indexed name with an SSID tag, e.g. capture_007_MyWiFi.pcap.
- * The separator before %s is required: without it an SSID such as
- * "504" would yield "capture_001504.pcap", which the index parser
- * then reads as 1504. */
-#define PCAP_FILE_PATH_SSID_FMT PCAP_BASE_PATH "/capture_%03u_%s.pcap"
+/* Untagged result name, e.g. pmkid_007.txt. */
+#define PCAP_FILE_PATH_TEXT_FMT PCAP_BASE_PATH "/%s_%03u.txt"
+/* Indexed name with an SSID tag, e.g. capture_007_MyWiFi.pcap. The separator
+ * before the tag is required: without it an SSID such as "504" would yield
+ * "capture_001504.pcap", which the index parser reads as 1504. */
+#define PCAP_FILE_PATH_TAGGED_FMT PCAP_BASE_PATH "/%s_%03u_%s%s"
 #define PCAP_SSID_TAG_MAX 24
+/* SPIFFS keeps the object name (basename) in a buffer of
+ * CONFIG_SPIFFS_OBJ_NAME_LEN bytes, so a name may use one character less:
+ * "... this length include the zero-termination character". */
+#ifndef CONFIG_SPIFFS_OBJ_NAME_LEN
+#define CONFIG_SPIFFS_OBJ_NAME_LEN 32
+#endif
+#define PCAP_FS_NAME_MAX ((unsigned) CONFIG_SPIFFS_OBJ_NAME_LEN - 1)
 #define PCAP_DIR_PATH    PCAP_BASE_PATH
 #define WRITE_BUF_SIZE   4096
 
@@ -206,6 +216,45 @@ static void build_ssid_tag(const uint8_t *ssid, unsigned len)
 }
 
 /**
+ * @brief Build a tagged file name that SPIFFS will actually accept.
+ *
+ * The SSID tag is shortened until the resulting basename fits the SPIFFS object
+ * name limit. Without this a long SSID (a very common case) makes fopen() fail
+ * with ENAMETOOLONG, which turned the whole capture into a storage error.
+ *
+ * @param prefix    name prefix without the trailing separator, e.g. "capture"
+ * @param extension file extension including the dot, e.g. ".pcap"
+ * @param index     capture index, written as three digits
+ * @param reserve   characters appended to the name later (".tmp" = 4) so that
+ *                  the temporary file used by the atomic text write also fits
+ */
+static void build_tagged_name(char *out, size_t out_size, const char *prefix,
+                              const char *extension, unsigned index,
+                              unsigned reserve)
+{
+    for (;;) {
+        int written = snprintf(out, out_size, PCAP_FILE_PATH_TAGGED_FMT,
+                               prefix, index, pcap_ssid_tag, extension);
+        if (written < 0 || (size_t) written >= out_size) {
+            out[0] = '\0';
+            return;
+        }
+
+        /* SPIFFS limits the object name, not the whole path. */
+        const char *base = strrchr(out, '/');
+        size_t name_len = strlen(base != NULL ? base + 1 : out);
+        if (name_len + reserve <= PCAP_FS_NAME_MAX) return;
+
+        size_t tag_len = strlen(pcap_ssid_tag);
+        if (tag_len == 0) {
+            ESP_LOGE(TAG, "Generated name exceeds the SPIFFS limit: %s", out);
+            return;
+        }
+        pcap_ssid_tag[tag_len - 1] = '\0';
+    }
+}
+
+/**
  * @brief Join the capture directory with a file name, rejecting overlong input.
  *
  * @return true when the joined path fits in out.
@@ -305,8 +354,8 @@ static void pick_next_capture_path(void)
     pcap_file_index = max_index + 1;
 
     if (pcap_ssid_tag[0] != '\0') {
-        snprintf(pcap_cur_path, sizeof(pcap_cur_path),
-                 PCAP_FILE_PATH_SSID_FMT, pcap_file_index, pcap_ssid_tag);
+        build_tagged_name(pcap_cur_path, sizeof(pcap_cur_path),
+                          "capture", ".pcap", pcap_file_index, 0);
     } else {
         snprintf(pcap_cur_path, sizeof(pcap_cur_path),
                  PCAP_FILE_PATH_FMT, pcap_file_index);
@@ -672,10 +721,10 @@ static void pick_next_text_path(const char *prefix, char *out, size_t out_size)
     }
 
     if (pcap_ssid_tag[0] != '\0') {
-        snprintf(out, out_size, PCAP_BASE_PATH "/%s_%03u_%s.txt",
-                 prefix, max_index + 1, pcap_ssid_tag);
+        /* Reserve 4 characters for the ".tmp" suffix used below. */
+        build_tagged_name(out, out_size, prefix, ".txt", max_index + 1, 4);
     } else {
-        snprintf(out, out_size, PCAP_BASE_PATH "/%s_%03u.txt",
+        snprintf(out, out_size, PCAP_FILE_PATH_TEXT_FMT,
                  prefix, max_index + 1);
     }
 }
