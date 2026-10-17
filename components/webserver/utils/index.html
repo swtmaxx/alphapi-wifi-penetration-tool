@@ -501,8 +501,10 @@
         }
         if(pmkids.length > 0) {
             container.appendChild(document.createElement("br"));
+            /* hashcat -m 22000 line: WPA*01*PMKID*MAC_AP*MAC_STA*ESSID*** with
+               the ESSID in hex, matching what the device writes to pmkid_*.txt. */
             appendLine("Hashcat 格式：",
-                       pmkids[0] + "*" + mac_ap + "*" + mac_sta + "*" + ssid);
+                       "WPA*01*" + pmkids[0] + "*" + mac_ap + "*" + mac_sta + "*" + ssid + "***");
         }
     }
     function resultHandshake(attack_content, attack_content_size){

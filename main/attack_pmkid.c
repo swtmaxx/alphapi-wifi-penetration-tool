@@ -108,6 +108,7 @@ static void pmkid_exit_condition_handler(void *args, esp_event_base_t event_base
             char pmkid_hex[33];
             char ap_hex[13];
             char sta_hex[13];
+            char essid_hex[2 * 32 + 1];
             for (unsigned i = 0; i < 16; i++) {
                 snprintf(&pmkid_hex[i * 2], 3, "%02x", item->pmkid[i]);
             }
@@ -122,12 +123,23 @@ static void pmkid_exit_condition_handler(void *args, esp_event_base_t event_base
             }
             sta_hex[12] = '\0';
 
-            snprintf(hashcat_line, sizeof(hashcat_line), "%s*%s*%s*%s",
-                     pmkid_hex, ap_hex, sta_hex, (char *) ap_record->ssid);
+            /* hashcat mode 22000 uses the unified line
+               WPA*01*PMKID*MAC_AP*MAC_STA*ESSID*** with the ESSID in hex.
+               The previous 4-field line was the legacy -m 16800 layout (and
+               even that one needed a hex ESSID), so it could not be fed to
+               -m 22000 at all. */
+            unsigned essid_len = strlen((char *) ap_record->ssid);
+            if (essid_len > 32) essid_len = 32;
+            for (unsigned i = 0; i < essid_len; i++) {
+                snprintf(&essid_hex[i * 2], 3, "%02x", ap_record->ssid[i]);
+            }
+            essid_hex[essid_len * 2] = '\0';
+
+            snprintf(hashcat_line, sizeof(hashcat_line), "WPA*01*%s*%s*%s*%s***",
+                     pmkid_hex, ap_hex, sta_hex, essid_hex);
 
             if (pcap_serializer_write_text("pmkid", ap_record->ssid,
-                                           strlen((char *) ap_record->ssid),
-                                           hashcat_line)) {
+                                           essid_len, hashcat_line)) {
                 saved = true;
             }
         }

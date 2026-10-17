@@ -138,7 +138,19 @@ capture_002.pcap
 pmkid_001_HomeWiFi.txt
 ```
 
-文件名标签只保留 ASCII 字母、数字、连字符和下划线；中文或其他字符会被替换为下划线。隐藏 SSID 可能生成没有标签的文件名，但不会因此自动获得真实 ESSID。
+文件名标签只保留 ASCII 字母、数字、连字符和下划线；中文或其他字符会被替换为下划线。隐藏 SSID 可能生成没有标签的文件名，但不会因此自动获得真实 ESSID。过长的 SSID 标签会自动截短，以保证文件名不超出 SPIFFS 的长度上限（否则在部分长 SSID 的网络下根本无法保存抓包）。
+
+`pmkid_*.txt` 的每一行是 hashcat `-m 22000` 可直接使用的格式，ESSID 为十六进制：
+
+```text
+WPA*01*<PMKID>*<MAC_AP>*<MAC_STA>*<ESSID hex>***
+```
+
+使用示例（在本仓库之外的授权环境中运行）：
+
+```shell
+hashcat -m 22000 pmkid_001_HomeWiFi.txt wordlist.txt
+```
 
 设备使用 4 MB SPIFFS 保存这些文件，不自动分卷，也不自动删除旧文件。空间不足或写入失败时，攻击会停止并在网页和屏幕上报告存储错误。
 
