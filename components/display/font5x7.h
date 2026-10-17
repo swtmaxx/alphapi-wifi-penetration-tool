@@ -2,8 +2,9 @@
  * @file font5x7.h
  * @brief Standard public-domain 5x7 bitmap font (ASCII 0x20..0x7F).
  *
- * @copyright Copyright (c) 2026 swtmaxx
- * @note MIT licensed, see LICENSE in the repository root.
+ * @note The glyph data is public domain (no copyright is claimed on it). Only
+ *       the table declaration and the macros in this file are covered by the
+ *       repository's MIT licence.
  */
 #ifndef FONT5X7_H
 #define FONT5X7_H

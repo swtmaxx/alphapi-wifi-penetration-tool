@@ -35,14 +35,6 @@ void attack_method_broadcast_stop();
 void attack_method_rogueap(const wifi_ap_record_t *ap_record);
 
 /**
- * @brief Whether the AP interface is currently configured as a rogue clone.
- *
- * While a rogue AP is active the broadcast helper must not reconfigure the AP
- * interface, otherwise the clone is replaced by the management AP.
- */
-bool attack_method_rogueap_active(void);
-
-/**
  * @brief Stops a running rogue AP and restores the management AP.
  *
  * Restores the original AP MAC address and the management AP configuration.

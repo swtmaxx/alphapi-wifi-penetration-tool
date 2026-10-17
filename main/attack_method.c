@@ -132,10 +132,6 @@ void attack_method_rogueap(const wifi_ap_record_t *ap_record){
     rogue_ap_active = true;
 }
 
-bool attack_method_rogueap_active(void){
-    return rogue_ap_active;
-}
-
 /**
  * @brief Stops the rogue AP and brings the management AP back.
  *
