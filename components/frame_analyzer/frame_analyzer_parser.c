@@ -141,9 +141,10 @@ static pmkid_item_t *parse_pmkid_from_key_data(uint8_t *key_data, const uint16_t
                     key_data_field->data_type);
 
         /* The KDE layout is: type(1) length(1) oui+data_type(4) data(length).
-           Guard against a zero/short length so the walk always advances. */
+           The whole element is therefore 2 + length bytes long, and a length
+           of at least 4 is required to hold the OUI + data type. */
         unsigned field_len = key_data_field->length;
-        if (field_len < 4 || key_data_index + 1 + field_len > key_data_max_index) {
+        if (field_len < 4 || key_data_index + 2 + field_len > key_data_max_index) {
             ESP_LOGD(TAG, "Malformed key-data field (len=%u); stop parsing", field_len);
             break;
         }
@@ -168,7 +169,7 @@ static pmkid_item_t *parse_pmkid_from_key_data(uint8_t *key_data, const uint16_t
             }
         }
 
-        key_data_index += 1 + field_len;
+        key_data_index += 2 + field_len;
     }
 
     return pmkid_item_head;
