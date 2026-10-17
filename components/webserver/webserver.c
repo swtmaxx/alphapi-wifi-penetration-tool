@@ -145,13 +145,18 @@ static esp_err_t uri_ap_list_get_handler(httpd_req_t *req) {
     char resp_chunk[41];
 
     set_security_headers(req);
-    ESP_ERROR_CHECK(httpd_resp_set_type(req, HTTPD_TYPE_OCTET));
+    esp_err_t res = httpd_resp_set_type(req, HTTPD_TYPE_OCTET);
+    if (res != ESP_OK) return res;
     for (unsigned i = 0; i < ap_records.count; i++) {
         memcpy(resp_chunk, ap_records.records[i].ssid, 33);
         memcpy(&resp_chunk[33], ap_records.records[i].bssid, 6);
         memcpy(&resp_chunk[39], &ap_records.records[i].rssi, 1);
         resp_chunk[40] = (char) wifictl_get_client_count(ap_records.records[i].bssid);
-        ESP_ERROR_CHECK(httpd_resp_send_chunk(req, resp_chunk, 41));
+        /* A client that walks away mid-stream is normal here: scanning takes
+           seconds and the browser often gives up first. Never abort the device
+           for a failed send, just stop streaming. */
+        res = httpd_resp_send_chunk(req, resp_chunk, 41);
+        if (res != ESP_OK) return res;
     }
     return httpd_resp_send_chunk(req, NULL, 0);
 }
@@ -303,7 +308,8 @@ static esp_err_t uri_capture_hccapx_get_handler(httpd_req_t *req){
         return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "尚未抓到可用握手");
     }
     set_security_headers(req);
-    ESP_ERROR_CHECK(httpd_resp_set_type(req, HTTPD_TYPE_OCTET));
+    esp_err_t res = httpd_resp_set_type(req, HTTPD_TYPE_OCTET);
+    if (res != ESP_OK) return res;
     return httpd_resp_send(req, (char *) hccapx, sizeof(hccapx_t));
 }
 
