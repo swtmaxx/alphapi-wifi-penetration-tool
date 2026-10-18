@@ -91,7 +91,12 @@ void attack_update_status(attack_state_t state) {
     if(state == FINISHED || state == STORAGE_ERROR) {
         ESP_LOGD(TAG, "Stopping attack timeout timer");
         if (esp_timer_is_active(attack_timeout_handle)) {
-            ESP_ERROR_CHECK(esp_timer_stop(attack_timeout_handle));
+            /* Tolerate ESP_ERR_INVALID_STATE: another stop path may have stopped
+               it between the is_active() check and this call. */
+            esp_err_t err = esp_timer_stop(attack_timeout_handle);
+            if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+                ESP_LOGW(TAG, "Failed to stop the timeout timer: %s", esp_err_to_name(err));
+            }
         }
     } 
 }
@@ -143,6 +148,12 @@ static void success_stop_task(void *arg)
     type = attack_status.type;
     uint8_t state_now = attack_status.state;
     uint32_t generation_now = attack_generation;
+    if (current) {
+        /* Claim the teardown inside the same critical section as the check, so a
+           concurrent timeout/reset can no longer pass its own RUNNING check and
+           tear the same attack down a second time. */
+        attack_status.state = FINISHED;
+    }
     status_unlock();
 
     if (!current) {
@@ -156,9 +167,11 @@ static void success_stop_task(void *arg)
     }
 
     autostop_acted++;
-    attack_update_status(FINISHED);
     if (esp_timer_is_active(attack_timeout_handle)) {
-        esp_timer_stop(attack_timeout_handle);
+        esp_err_t err = esp_timer_stop(attack_timeout_handle);
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "Failed to stop the timeout timer: %s", esp_err_to_name(err));
+        }
     }
 
     switch (type) {
@@ -181,6 +194,10 @@ static void storage_error_stop_task(void *arg)
     bool current = (attack_status.state == RUNNING) &&
                    (attack_generation == my_generation);
     type = attack_status.type;
+    if (current) {
+        /* Same claim-inside-the-lock rule as success_stop_task(). */
+        attack_status.state = STORAGE_ERROR;
+    }
     status_unlock();
 
     if (!current) {
@@ -189,7 +206,6 @@ static void storage_error_stop_task(void *arg)
         return;
     }
 
-    attack_update_status(STORAGE_ERROR);
     char *message = attack_alloc_result_content(strlen(storage_error_message) + 1);
     if (message != NULL) strcpy(message, storage_error_message);
 
@@ -279,7 +295,8 @@ void attack_append_status_content(uint8_t *buffer, unsigned size){
         return;
     }
     status_lock();
-    if (attack_status.content_size + size > ATTACK_STATUS_CONTENT_MAX) {
+    if (attack_status.content_size + size >= ATTACK_STATUS_CONTENT_MAX ||
+        size > ATTACK_STATUS_CONTENT_MAX) {
         status_unlock();
         ESP_LOGW(TAG, "Status content limit reached (%u bytes); dropping new data",
                  ATTACK_STATUS_CONTENT_MAX);
@@ -377,27 +394,33 @@ static void attack_timeout(void* arg){
 static void attack_request_handler(void *args, esp_event_base_t event_base, int32_t event_id, void *event_data) {
     ESP_LOGI(TAG, "Starting attack...");
     attack_request_t *attack_request = (attack_request_t *) event_data;
-    const wifi_ap_record_t *selected = wifictl_get_ap_record(attack_request->ap_record_id);
-    if(selected == NULL){
-        ESP_LOGE(TAG, "No AP record for id %u", attack_request->ap_record_id);
-        return;
-    }
-
-    /* Snapshot the record: scanning overwrites the shared AP array. */
-    memcpy(&active_ap_record, selected, sizeof(active_ap_record));
-
-    attack_config_t attack_config = { .type = attack_request->type, .method = attack_request->method, .timeout = attack_request->timeout };
-    attack_config.ap_record = &active_ap_record;
-
     status_lock();
     if (attack_status.state == RUNNING) {
         status_unlock();
         ESP_LOGW(TAG, "Attack already running");
         return;
     }
+    /* Drop the previous result so a new run cannot append to it, and claim the
+       state before touching active_ap_record: a second request must no longer be
+       able to overwrite the record the running attack points at. */
+    free(attack_status.content);
+    attack_status.content = NULL;
+    attack_status.content_size = 0;
     attack_status.state = RUNNING;
-    attack_status.type = attack_config.type;
+    attack_status.type = attack_request->type;
     status_unlock();
+
+    if (!wifictl_copy_ap_record(attack_request->ap_record_id, &active_ap_record)) {
+        ESP_LOGE(TAG, "No AP record for id %u", attack_request->ap_record_id);
+        status_lock();
+        attack_status.state = READY;
+        attack_status.type = -1;
+        status_unlock();
+        return;
+    }
+
+    attack_config_t attack_config = { .type = attack_request->type, .method = attack_request->method, .timeout = attack_request->timeout };
+    attack_config.ap_record = &active_ap_record;
 
     /* Re-arm auto-stop: the previous run may have latched it. */
     attack_reset_success_latch();
@@ -405,10 +428,17 @@ static void attack_request_handler(void *args, esp_event_base_t event_base, int3
 
     // set timeout
     if (esp_timer_is_active(attack_timeout_handle)) {
-        ESP_ERROR_CHECK(esp_timer_stop(attack_timeout_handle));
+        esp_err_t err = esp_timer_stop(attack_timeout_handle);
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "Failed to stop the timeout timer: %s", esp_err_to_name(err));
+        }
     }
     if (attack_config.timeout > 0) {
-        ESP_ERROR_CHECK(esp_timer_start_once(attack_timeout_handle, attack_config.timeout * 1000000));
+        esp_err_t err = esp_timer_start_once(attack_timeout_handle,
+                                            (uint64_t) attack_config.timeout * 1000000ULL);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to arm the timeout: %s", esp_err_to_name(err));
+        }
     }
     // start attack based on it's type
     switch(attack_config.type) {
@@ -455,7 +485,10 @@ static void attack_reset_handler(void *args, esp_event_base_t event_base, int32_
 
     if (stop_required) {
         if (esp_timer_is_active(attack_timeout_handle)) {
-            ESP_ERROR_CHECK(esp_timer_stop(attack_timeout_handle));
+            esp_err_t err = esp_timer_stop(attack_timeout_handle);
+            if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+                ESP_LOGW(TAG, "Failed to stop the timeout timer: %s", esp_err_to_name(err));
+            }
         }
         switch (type) {
             case ATTACK_TYPE_PMKID:    attack_pmkid_stop(); break;

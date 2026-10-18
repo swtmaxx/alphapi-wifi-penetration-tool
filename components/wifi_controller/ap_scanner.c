@@ -78,10 +78,23 @@ bool wifictl_copy_ap_records(wifictl_ap_records_t *out)
     return true;
 }
 
-const wifi_ap_record_t *wifictl_get_ap_record(unsigned index) {
-    if(index >= ap_records.count){
-        ESP_LOGE(TAG, "Index out of bounds! %u records available, but %u requested", ap_records.count, index);
-        return NULL;
+bool wifictl_copy_ap_record(unsigned index, wifi_ap_record_t *out)
+{
+    if (out == NULL || !ensure_scanner_mutex()) return false;
+
+    bool ok = false;
+    /* Copy under the lock: a concurrent scan rewrites the whole array, and the
+       caller must never end up with a record that mixes two scans. */
+    xSemaphoreTake(scanner_mutex, portMAX_DELAY);
+    if (index < ap_records.count) {
+        memcpy(out, &ap_records.records[index], sizeof(*out));
+        ok = true;
     }
-    return &ap_records.records[index];
+    xSemaphoreGive(scanner_mutex);
+
+    if (!ok) {
+        ESP_LOGE(TAG, "Index out of bounds! %u records available, but %u requested",
+                 ap_records.count, index);
+    }
+    return ok;
 }

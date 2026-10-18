@@ -29,6 +29,12 @@ static esp_event_loop_handle_t sniffer_loop = NULL;
 
 
 static volatile bool sniffer_active = false;
+static volatile uint32_t sniffer_dropped = 0;
+
+uint32_t wifictl_sniffer_dropped_frames(void)
+{
+    return sniffer_dropped;
+}
 
 static bool ensure_sniffer_loop(void)
 {
@@ -74,6 +80,9 @@ bool wifictl_sniffer_loop_ready(void)
 static void frame_handler(void *buf, wifi_promiscuous_pkt_type_t type) {
     ESP_LOGV(TAG, "Captured frame %d.", (int) type);
 
+    /* Without a loop there is nowhere to deliver frames; never post to NULL. */
+    if (sniffer_loop == NULL) return;
+
     wifi_promiscuous_pkt_t *frame = (wifi_promiscuous_pkt_t *) buf;
 
     int32_t event_id;
@@ -91,13 +100,12 @@ static void frame_handler(void *buf, wifi_promiscuous_pkt_type_t type) {
             return;
     }
 
-    /* Post to the sniffer's own loop: during an attack every captured frame
-       lands here, and the shared default loop (32 slots) would be flooded,
-       stalling any other component that posts to it. Drop frames instead of
-       blocking the Wi-Fi driver when the sniffer queue is full. */
-    esp_event_post_to(sniffer_loop, SNIFFER_EVENTS, event_id, frame,
-                      frame->rx_ctrl.sig_len + sizeof(wifi_promiscuous_pkt_t),
-                      0);
+    /* Drop frames instead of blocking the Wi-Fi driver when the sniffer queue is
+       full, but keep a counter so the loss is at least visible on screen/logs. */
+    esp_err_t err = esp_event_post_to(sniffer_loop, SNIFFER_EVENTS, event_id, frame,
+                                      frame->rx_ctrl.sig_len + sizeof(wifi_promiscuous_pkt_t),
+                                      0);
+    if (err != ESP_OK) sniffer_dropped++;
 }
 
 /**
@@ -122,7 +130,13 @@ void wifictl_sniffer_filter_frame_types(bool data, bool mgmt, bool ctrl) {
 void wifictl_sniffer_start(uint8_t channel) {
     ESP_LOGI(TAG, "Starting promiscuous mode...");
     if (!ensure_sniffer_loop()) {
-        ESP_LOGE(TAG, "Sniffer event loop unavailable; frames will be dropped");
+        /* Without a loop every frame would be dropped: do not pretend to capture. */
+        ESP_LOGE(TAG, "Sniffer event loop unavailable; not starting promiscuous mode");
+        return;
+    }
+    if (channel == 0 || channel > 13) {
+        ESP_LOGE(TAG, "Channel out of range for the sniffer: %u", channel);
+        return;
     }
     // ESP32 cannot switch port, if there is some STA connected to AP
     ESP_LOGD(TAG, "Kicking all connected STAs from AP");
@@ -130,7 +144,12 @@ void wifictl_sniffer_start(uint8_t channel) {
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to deauth connected STAs: %s", esp_err_to_name(err));
     }
-    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    err = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    if (err != ESP_OK) {
+        /* Staying on the wrong channel would silently capture nothing. */
+        ESP_LOGE(TAG, "Failed to set channel %u: %s", channel, esp_err_to_name(err));
+        return;
+    }
     esp_wifi_set_promiscuous(true);
     esp_wifi_set_promiscuous_rx_cb(&frame_handler);
     sniffer_active = true;

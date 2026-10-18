@@ -61,7 +61,13 @@ void wifictl_ap_start(wifi_config_t *wifi_config) {
         wifi_init_apsta();
     }
 
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, wifi_config));
+    /* The config comes from a scanned AP (rogue AP clone) or from Kconfig, so a
+       rejected config must not abort the device. */
+    esp_err_t err = esp_wifi_set_config(WIFI_IF_AP, wifi_config);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to configure the AP: %s", esp_err_to_name(err));
+        return;
+    }
     ESP_LOGI(TAG, "AP started with SSID=%s", wifi_config->ap.ssid);
 }
 
@@ -72,21 +78,39 @@ void wifictl_ap_stop(){
             .max_connection = 0
         },
     };
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
+    esp_err_t err = esp_wifi_set_config(WIFI_IF_AP, &wifi_config);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to stop the AP: %s", esp_err_to_name(err));
+        return;
+    }
     ESP_LOGD(TAG, "AP stopped");
 }
 
 void wifictl_mgmt_ap_start(){
+    const size_t password_len = strlen(CONFIG_MGMT_AP_PASSWORD);
+    wifi_auth_mode_t authmode = WIFI_AUTH_WPA2_PSK;
+    /* WPA2-PSK needs 8..63 characters. A shorter CONFIG_MGMT_AP_PASSWORD makes
+       esp_wifi_set_config() reject the whole config, which used to abort() during
+       boot and left the device unreachable; start an open AP instead and say so. */
+    if (password_len < 8 || password_len > 63) {
+        ESP_LOGE(TAG, "Management AP password must be 8..63 characters (got %u); "
+                      "starting the AP WITHOUT a password so it stays reachable",
+                 (unsigned) password_len);
+        authmode = WIFI_AUTH_OPEN;
+    }
     wifi_config_t mgmt_wifi_config = {
         .ap = {
             .ssid = CONFIG_MGMT_AP_SSID,
             .ssid_len = strlen(CONFIG_MGMT_AP_SSID),
-            .password = CONFIG_MGMT_AP_PASSWORD,
             .channel = CONFIG_MGMT_AP_CHANNEL,
             .max_connection = CONFIG_MGMT_AP_MAX_CONNECTIONS,
-            .authmode = WIFI_AUTH_WPA2_PSK
+            .authmode = authmode
         },
     };
+    if (authmode != WIFI_AUTH_OPEN) {
+        strncpy((char *) mgmt_wifi_config.ap.password, CONFIG_MGMT_AP_PASSWORD,
+                sizeof(mgmt_wifi_config.ap.password) - 1);
+    }
     wifictl_ap_start(&mgmt_wifi_config);
 }
 
@@ -116,8 +140,17 @@ void wifictl_sta_connect_to_ap(const wifi_ap_record_t *ap_record, const char pas
 
     ESP_LOGD(TAG, ".ssid=%s", sta_wifi_config.sta.ssid);
 
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_connect());
+    esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &sta_wifi_config);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to configure the STA: %s", esp_err_to_name(err));
+        return;
+    }
+    err = esp_wifi_connect();
+    if (err != ESP_OK) {
+        /* ESP_ERR_WIFI_CONN / ESP_ERR_WIFI_STATE are normal while a previous
+           connect is still settling (PMKID attacks get restarted quickly). */
+        ESP_LOGW(TAG, "esp_wifi_connect() failed: %s", esp_err_to_name(err));
+    }
 
 }
 
@@ -130,7 +163,14 @@ void wifictl_sta_disconnect(){
 
 void wifictl_set_ap_mac(const uint8_t *mac_ap){
     ESP_LOGD(TAG, "Changing AP MAC address...");
-    ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_AP, mac_ap));
+    if (mac_ap == NULL || (mac_ap[0] & 0x01)) {
+        ESP_LOGE(TAG, "Refusing a multicast/zero AP MAC");
+        return;
+    }
+    esp_err_t err = esp_wifi_set_mac(WIFI_IF_AP, mac_ap);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set the AP MAC: %s", esp_err_to_name(err));
+    }
 }
 
 void wifictl_get_ap_mac(uint8_t *mac_ap){
@@ -139,7 +179,10 @@ void wifictl_get_ap_mac(uint8_t *mac_ap){
 
 void wifictl_restore_ap_mac(){
     ESP_LOGD(TAG, "Restoring original AP MAC address...");
-    ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_AP, original_mac_ap));
+    esp_err_t err = esp_wifi_set_mac(WIFI_IF_AP, original_mac_ap);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to restore the AP MAC: %s", esp_err_to_name(err));
+    }
 }
 
 void wifictl_get_sta_mac(uint8_t *mac_sta){

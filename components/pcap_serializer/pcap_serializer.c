@@ -160,6 +160,13 @@ static bool flush_write_buf(void)
         set_write_error();
         ESP_LOGE(TAG, "Failed to write PCAP buffer (%u/%u bytes)",
                  (unsigned) written, write_buf_used);
+        /* Keep only the bytes that did not reach the file, otherwise a retry in
+           pcap_serializer_deinit() would append them a second time and corrupt
+           the record stream. */
+        if (written > 0 && written < write_buf_used) {
+            memmove(write_buf, write_buf + written, write_buf_used - written);
+            write_buf_used -= (unsigned) written;
+        }
         return false;
     }
     write_buf_used = 0;
@@ -958,8 +965,10 @@ bool pcap_serializer_get_storage_info(pcap_storage_info_t *info)
     size_t used = 0;
     esp_err_t ret = esp_spiffs_info(NULL, &total, &used);
     if (ret != ESP_OK) {
-        storage_state = PCAP_STORAGE_IO_ERROR;
-        info->state = storage_state;
+        /* Report the failure without touching storage_state: that flag gates the
+           capture write path, so a read-only status query must never be able to
+           abort a running capture. */
+        info->state = PCAP_STORAGE_IO_ERROR;
         unlock_serializer();
         return false;
     }

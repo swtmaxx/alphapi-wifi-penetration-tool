@@ -43,6 +43,9 @@ typedef struct {
 
 static client_entry_t entries[CLIENT_COUNT_MAX_AP];
 static unsigned entry_count = 0;
+/* BSSIDs we are counting for, filled at the start of every sweep. */
+static uint8_t tracked_bssids[CLIENT_COUNT_MAX_AP][6];
+static unsigned tracked_bssid_count = 0;
 static SemaphoreHandle_t counter_mutex = NULL;
 static volatile bool counting_active = false;
 static bool handler_registered = false;
@@ -86,6 +89,19 @@ static void client_frame_handler(void *arg, esp_event_base_t base, int32_t id, v
     if (!ensure_mutex()) return;
     xSemaphoreTake(counter_mutex, portMAX_DELAY);
 
+    /* Only count frames addressed to an AP we actually scanned. Beacons go to the
+       broadcast address and probe responses / AP-to-STA data go to the client, so
+       without this filter the AP's own transmissions were recorded as "clients"
+       and pushed the real APs out of the fixed-size table. */
+    bool known_ap = (tracked_bssid_count == 0);
+    for (unsigned i = 0; !known_ap && i < tracked_bssid_count; i++) {
+        if (memcmp(tracked_bssids[i], dst, 6) == 0) known_ap = true;
+    }
+    if (!known_ap) {
+        xSemaphoreGive(counter_mutex);
+        return;
+    }
+
     int slot = -1;
     for (unsigned i = 0; i < entry_count; i++) {
         if (memcmp(entries[i].bssid, dst, 6) == 0) {
@@ -116,17 +132,44 @@ static void client_frame_handler(void *arg, esp_event_base_t base, int32_t id, v
     xSemaphoreGive(counter_mutex);
 }
 
+static void unregister_handler(void)
+{
+    if (!handler_registered) return;
+    esp_event_loop_handle_t loop = wifictl_sniffer_event_loop();
+    if (loop != NULL) {
+        esp_event_handler_unregister_with(loop, SNIFFER_EVENTS, ESP_EVENT_ANY_ID,
+                                          &client_frame_handler);
+    }
+    handler_registered = false;
+}
+
 static void client_counting_task(void *arg)
 {
     wifictl_ap_records_t ap_records;
     if (!wifictl_copy_ap_records(&ap_records) || ap_records.count == 0) {
         ESP_LOGW(TAG, "No scanned APs; run a network scan first");
+        /* Do not leave the sniffer handler registered: it would keep walking the
+           table on every captured frame for no reason. */
+        unregister_handler();
         counting_active = false;
         vTaskDelete(NULL);
         return;
     }
 
     wifictl_clear_client_counts();
+
+    /* Remember the BSSIDs to count for; the sniffer handler filters on them. */
+    if (ensure_mutex()) {
+        xSemaphoreTake(counter_mutex, portMAX_DELAY);
+        tracked_bssid_count = 0;
+        for (unsigned i = 0; i < ap_records.count &&
+                             tracked_bssid_count < CLIENT_COUNT_MAX_AP; i++) {
+            memcpy(tracked_bssids[tracked_bssid_count++],
+                   ap_records.records[i].bssid, 6);
+        }
+        xSemaphoreGive(counter_mutex);
+    }
+
     wifictl_sniffer_filter_frame_types(true, true, false);
 
     bool channels[CLIENT_COUNT_MAX_CHANNEL + 1] = { false };
@@ -147,12 +190,7 @@ static void client_counting_task(void *arg)
     }
 
     if (handler_registered) {
-        esp_event_loop_handle_t loop = wifictl_sniffer_event_loop();
-        if (loop != NULL) {
-            esp_event_handler_unregister_with(loop, SNIFFER_EVENTS, ESP_EVENT_ANY_ID,
-                                              &client_frame_handler);
-        }
-        handler_registered = false;
+        unregister_handler();
     }
 
     /* Restore the management AP on its configured channel. */

@@ -72,4 +72,12 @@ void wifictl_sniffer_stop();
  */
 bool wifictl_sniffer_is_active(void);
 
+/**
+ * @brief Number of frames dropped because the sniffer queue was full.
+ *
+ * Frames are dropped rather than blocking the Wi-Fi driver, so this counter is
+ * the only way to notice that a capture is losing traffic.
+ */
+uint32_t wifictl_sniffer_dropped_frames(void);
+
 #endif

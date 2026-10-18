@@ -15,6 +15,7 @@
 #define LOG_LOCAL_LEVEL ESP_LOG_DEBUG
 #include "esp_log.h"
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
 #include "frame_analyzer.h"
 #include "frame_analyzer_types.h"
 #include "frame_analyzer_parser.h"
@@ -33,6 +34,12 @@
 //@}
 
 static char *TAG = "hccapx_serializer";
+
+/* The sniffer task writes the HCCAPX buffer while the HTTP task may read it, so
+   both sides go through this lock (a short critical section is enough: the
+   structure is 393 bytes and only a handful of EAPOL frames are processed per
+   attack). */
+static portMUX_TYPE hccapx_mux = portMUX_INITIALIZER_UNLOCKED;
 
 /**
  * @brief Default values for hccapx buffer
@@ -75,6 +82,7 @@ static bool is_array_zero(uint8_t *array, unsigned size){
 }
 
 void hccapx_serializer_init(const uint8_t *ssid, unsigned size){
+    portENTER_CRITICAL(&hccapx_mux);
     /* Reset the whole handshake state, not just message_pair.
      *
      * message_ap / message_sta / eapol_source drive the M1-M4 state machine.
@@ -98,6 +106,7 @@ void hccapx_serializer_init(const uint8_t *ssid, unsigned size){
     hccapx.essid_len = size;
     memcpy(hccapx.essid, ssid, size);
     hccapx.message_pair = 255;
+    portEXIT_CRITICAL(&hccapx_mux);
 }
 
 hccapx_t *hccapx_serializer_get(){
@@ -106,6 +115,16 @@ hccapx_t *hccapx_serializer_get(){
     }
     
     return &hccapx;
+}
+
+bool hccapx_serializer_snapshot(hccapx_t *out)
+{
+    if (out == NULL) return false;
+    portENTER_CRITICAL(&hccapx_mux);
+    bool valid = (hccapx.message_pair != 255);
+    if (valid) *out = hccapx;
+    portEXIT_CRITICAL(&hccapx_mux);
+    return valid;
 }
 
 /**
@@ -168,11 +187,14 @@ static void ap_message_m1(eapol_key_packet_t *eapol_key_packet){
 static void ap_message_m3(eapol_packet_t* eapol_packet, eapol_key_packet_t *eapol_key_packet,
                           unsigned available){
     ESP_LOGD(TAG, "From AP M3");
-    message_ap = 3;
+    /* Copy the ANonce *before* the assignment below: assigning message_ap first
+       made this copy dead code, so a capture that started at M3 produced a
+       handshake with an all-zero ANonce that hashcat can never crack. */
     if(message_ap == 0){
         // No AP message was processed yet. ANonce has to be copied into HCCAPX buffer.
         memcpy(hccapx.nonce_ap, eapol_key_packet->key_nonce, 32);
     }
+    message_ap = 3;
     if(eapol_source == 2){
         // EAPoL packet was already saved from message #2. No need to resave it.
         hccapx.message_pair = 2;
@@ -315,7 +337,16 @@ static void sta_message(data_frame_t *frame, eapol_packet_t* eapol_packet,
  * @param frame data frame with EAPoL-Key packet
  * @param frame_len number of valid bytes in frame (rx_ctrl.sig_len)
  */
+/* Defined below; the public entry point only wraps it in the lock. */
+static void hccapx_serializer_add_frame_locked(data_frame_t *frame, unsigned frame_len);
+
 void hccapx_serializer_add_frame(data_frame_t *frame, unsigned frame_len){
+    portENTER_CRITICAL(&hccapx_mux);
+    hccapx_serializer_add_frame_locked(frame, frame_len);
+    portEXIT_CRITICAL(&hccapx_mux);
+}
+
+static void hccapx_serializer_add_frame_locked(data_frame_t *frame, unsigned frame_len){
     unsigned eapol_len = 0;
     eapol_packet_t *eapol_packet = parse_eapol_packet(frame, frame_len, &eapol_len);
     if(eapol_packet == NULL){

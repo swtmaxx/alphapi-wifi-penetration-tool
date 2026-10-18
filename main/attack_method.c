@@ -86,19 +86,24 @@ void attack_method_broadcast(const wifi_ap_record_t *ap_record, unsigned period_
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start deauth timer: %s", esp_err_to_name(err));
         esp_timer_delete(deauth_timer_handle);
+        /* Clear the handle: leaving it dangling made the next stop call delete an
+           already freed timer. */
+        deauth_timer_handle = NULL;
     }
 }
 
 void attack_method_broadcast_stop(){
-    if (deauth_timer_handle == NULL) return;
-    if (esp_timer_is_active(deauth_timer_handle)) {
-        esp_err_t err = esp_timer_stop(deauth_timer_handle);
-        if (err != ESP_OK) {
+    esp_timer_handle_t handle = deauth_timer_handle;
+    if (handle == NULL) return;
+    /* Clear the shared handle first so a concurrent stop cannot delete it twice. */
+    deauth_timer_handle = NULL;
+    if (esp_timer_is_active(handle)) {
+        esp_err_t err = esp_timer_stop(handle);
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
             ESP_LOGW(TAG, "Failed to stop deauth timer: %s", esp_err_to_name(err));
         }
     }
-    esp_timer_delete(deauth_timer_handle);
-    deauth_timer_handle = NULL;
+    esp_timer_delete(handle);
 }
 
 /**

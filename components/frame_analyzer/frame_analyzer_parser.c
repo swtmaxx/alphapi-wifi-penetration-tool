@@ -21,7 +21,6 @@
 
 static const char *TAG = "frame_analyzer:parser";
 
-ESP_EVENT_DEFINE_BASE(FRAME_ANALYZER_EVENTS);
 
 /**
  * @brief Debug function to print raw frame to serial
@@ -69,10 +68,20 @@ eapol_packet_t *parse_eapol_packet(data_frame_t *frame, unsigned frame_len,
     }
 
     unsigned offset = sizeof(data_frame_mac_header_t);
+    /* 4-address (WDS/bridge) frames carry addr4 before the LLC/SNAP header. */
+    if (frame->mac_header.frame_control.to_ds && frame->mac_header.frame_control.from_ds) {
+        offset += 6;
+    }
     if(frame->mac_header.frame_control.subtype > 7) {
         ESP_LOGV(TAG, "QoS data frame");
         // Skipping QoS field (2 bytes)
         offset += 2;
+        /* When the Order bit is set the QoS header is followed by 4 bytes of
+           HT Control; without this the EtherType offset is wrong and such EAPOL
+           frames are silently missed. */
+        if (frame->mac_header.frame_control.htc_order) {
+            offset += 4;
+        }
     }
 
     /* LLC/SNAP header (6 bytes) followed by the 2-byte EtherType. */
@@ -102,13 +111,15 @@ eapol_packet_t *parse_eapol_packet(data_frame_t *frame, unsigned frame_len,
 eapol_key_packet_t *parse_eapol_key_packet(eapol_packet_t *eapol_packet,
                                           unsigned eapol_len){
     if (eapol_packet == NULL) return NULL;
-    if(eapol_packet->header.packet_type != EAPOL_KEY){
-        ESP_LOGD(TAG, "Not an EAPoL-Key packet.");
-        return NULL;
-    }
+    /* Validate before the first dereference: this API may be called with a
+       buffer shorter than the fixed descriptor. */
     if (eapol_len < EAPOL_KEY_DATA_OFFSET) {
         ESP_LOGD(TAG, "EAPoL-Key truncated (%u < %u bytes)",
                  eapol_len, (unsigned) EAPOL_KEY_DATA_OFFSET);
+        return NULL;
+    }
+    if(eapol_packet->header.packet_type != EAPOL_KEY){
+        ESP_LOGD(TAG, "Not an EAPoL-Key packet.");
         return NULL;
     }
     return (eapol_key_packet_t *) eapol_packet->packet_body;
@@ -177,6 +188,11 @@ static pmkid_item_t *parse_pmkid_from_key_data(uint8_t *key_data, const uint16_t
 
 pmkid_item_t *parse_pmkid(eapol_key_packet_t *eapol_key, unsigned eapol_len){
     if (eapol_key == NULL) return NULL;
+    /* Validate the captured length before dereferencing any descriptor field. */
+    if (eapol_len < EAPOL_KEY_DATA_OFFSET) {
+        ESP_LOGD(TAG, "EAPoL-Key too short for key data (%u bytes)", eapol_len);
+        return NULL;
+    }
     if(eapol_key->key_data_length == 0){
         ESP_LOGD(TAG, "Empty Key Data");
         return NULL;
@@ -189,10 +205,6 @@ pmkid_item_t *parse_pmkid(eapol_key_packet_t *eapol_key, unsigned eapol_len){
 
     /* key_data_length is attacker-controlled: it must not point past the bytes
        that were actually captured. */
-    if (eapol_len < EAPOL_KEY_DATA_OFFSET) {
-        ESP_LOGD(TAG, "EAPoL-Key too short for key data (%u bytes)", eapol_len);
-        return NULL;
-    }
     unsigned available = eapol_len - EAPOL_KEY_DATA_OFFSET;
     unsigned key_data_length = ntohs(eapol_key->key_data_length);
     if (key_data_length > available) {

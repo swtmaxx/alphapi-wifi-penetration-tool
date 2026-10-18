@@ -10,6 +10,7 @@
 #define HCCAPX_SERIALIZER_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #include "frame_analyzer_types.h"
 
@@ -49,6 +50,18 @@ void hccapx_serializer_init(const uint8_t *ssid, unsigned size);
  * @return hccapx_t* 
  */
 hccapx_t *hccapx_serializer_get();
+
+/**
+ * @brief Copy the current HCCAPX into caller-owned storage.
+ *
+ * hccapx_serializer_get() hands out a pointer into a buffer that the sniffer
+ * task keeps updating, so anything that streams it (for example an HTTP
+ * download) must take a snapshot instead of reading it in place.
+ *
+ * @param out destination, written only when a usable handshake is available
+ * @return true when the copy was taken
+ */
+bool hccapx_serializer_snapshot(hccapx_t *out);
 
 /**
  * @brief Adds new handshake frames into current HCCAPX.

@@ -68,6 +68,22 @@ static const char *storage_state_name(pcap_storage_state_t state)
  * @return esp_err_t
  * @{
  */
+/**
+ * @brief True while an attack owns the radio.
+ *
+ * Scanning or counting clients re-tunes the radio and restarts the management AP,
+ * which silently breaks a running capture or rogue AP. The screen UI already
+ * refuses those operations during an attack; the HTTP endpoints must too.
+ */
+static bool attack_is_running(void)
+{
+    attack_status_t status;
+    if (!attack_get_status_snapshot(&status)) return false;
+    bool running = (status.state == RUNNING);
+    attack_free_status_snapshot(&status);
+    return running;
+}
+
 static esp_err_t uri_root_get_handler(httpd_req_t *req) {
     set_security_headers(req);
     /* The UI talks only to this device and needs no external resource, so keep
@@ -102,6 +118,7 @@ static httpd_uri_t uri_root_get = {
  * @{
  */
 static esp_err_t uri_reset_head_handler(httpd_req_t *req) {
+    set_security_headers(req);
     ESP_ERROR_CHECK(esp_event_post(WEBSERVER_EVENTS, WEBSERVER_EVENT_ATTACK_RESET, NULL, 0, portMAX_DELAY));
     return httpd_resp_send(req, NULL, 0);
 }
@@ -126,6 +143,10 @@ static httpd_uri_t uri_reset_head = {
  * @{
  */
 static esp_err_t uri_ap_list_get_handler(httpd_req_t *req) {
+    if (attack_is_running()) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "攻击进行中，扫描会打断抓包，请先停止攻击");
+    }
     esp_err_t scan_ret = wifictl_scan_nearby_aps();
     if (scan_ret != ESP_OK) {
         const char *message = (scan_ret == ESP_ERR_TIMEOUT)
@@ -179,19 +200,23 @@ static httpd_uri_t uri_ap_list_get = {
  */
 static esp_err_t uri_run_attack_post_handler(httpd_req_t *req) {
     attack_request_t attack_request;
-    /* The body is exactly one attack_request_t. A shorter body would leave
-       uninitialised stack bytes in the request that gets posted to the attack
-       handler, so reject it instead of acting on garbage. */
-    int received = httpd_req_recv(req, (char *)&attack_request, sizeof(attack_request_t));
-    if (received == HTTPD_SOCK_ERR_TIMEOUT) {
-        return httpd_resp_send_408(req);
-    }
-    if (received != (int) sizeof(attack_request_t)) {
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "攻击参数不完整");
+    /* The body is exactly one attack_request_t. A short body used to leave
+       uninitialised stack bytes in the request, so keep reading until the whole
+       struct arrived (a single recv may return less) and reject anything else. */
+    size_t received = 0;
+    while (received < sizeof(attack_request_t)) {
+        int chunk = httpd_req_recv(req, (char *) &attack_request + received,
+                                  sizeof(attack_request_t) - received);
+        if (chunk == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (chunk <= 0) {
+            return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "攻击参数不完整");
+        }
+        received += (size_t) chunk;
     }
     if (attack_request.type > ATTACK_TYPE_DOS) {
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "未知攻击类型");
     }
+    set_security_headers(req);
     esp_err_t res = httpd_resp_send(req, NULL, 0);
     ESP_ERROR_CHECK(esp_event_post(WEBSERVER_EVENTS, WEBSERVER_EVENT_ATTACK_REQUEST, &attack_request, sizeof(attack_request_t), portMAX_DELAY));
     return res;
@@ -301,16 +326,16 @@ static httpd_uri_t uri_capture_pcap_get = {
  */
 static esp_err_t uri_capture_hccapx_get_handler(httpd_req_t *req){
     ESP_LOGD(TAG, "Providing HCCAPX file...");
-    /* hccapx_serializer_get() returns NULL until a usable handshake has been
-       assembled: never hand a NULL buffer to the HTTP layer. */
-    hccapx_t *hccapx = hccapx_serializer_get();
-    if (hccapx == NULL) {
+    /* Take a snapshot: the sniffer task keeps rewriting the shared buffer, and
+       hccapx_serializer_get() returns NULL until a usable handshake exists. */
+    hccapx_t snapshot;
+    if (!hccapx_serializer_snapshot(&snapshot)) {
         return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "尚未抓到可用握手");
     }
     set_security_headers(req);
     esp_err_t res = httpd_resp_set_type(req, HTTPD_TYPE_OCTET);
     if (res != ESP_OK) return res;
-    return httpd_resp_send(req, (char *) hccapx, sizeof(hccapx_t));
+    return httpd_resp_send(req, (char *) &snapshot, sizeof(snapshot));
 }
 
 static httpd_uri_t uri_capture_hccapx_get = {
@@ -373,7 +398,7 @@ static esp_err_t uri_pcap_list_get_handler(httpd_req_t *req) {
 }
 
 static esp_err_t uri_storage_status_get_handler(httpd_req_t *req) {
-    pcap_storage_info_t info;
+    pcap_storage_info_t info = {0};
     bool ok = pcap_serializer_get_storage_info(&info);
     char body[192];
     int len = snprintf(body, sizeof(body),
@@ -477,6 +502,7 @@ static esp_err_t uri_pcap_delete_post_handler(httpd_req_t *req) {
     if (!pcap_serializer_delete(name)) {
         return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "删除失败或文件不存在");
     }
+    set_security_headers(req);
     return httpd_resp_sendstr(req, "OK");
 }
 
@@ -503,6 +529,7 @@ static esp_err_t uri_pcap_delete_all_post_handler(httpd_req_t *req) {
     char body[64];
     snprintf(body, sizeof(body), "%s已删除 %u 个文件",
              ok ? "" : "部分删除失败，", removed);
+    set_security_headers(req);
     return ok ? httpd_resp_sendstr(req, body) :
                 httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, body);
 }
@@ -524,6 +551,11 @@ static httpd_uri_t uri_pcap_delete_all_post = {
  * @{
  */
 static esp_err_t uri_count_clients_post_handler(httpd_req_t *req) {
+    if (attack_is_running()) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "攻击进行中，客户端探测会打断抓包，请先停止攻击");
+    }
+    set_security_headers(req);
     wifictl_start_client_counting();
     return httpd_resp_send(req, NULL, 0);
 }

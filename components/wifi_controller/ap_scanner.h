@@ -36,11 +36,15 @@ esp_err_t wifictl_scan_nearby_aps(void);
 bool wifictl_copy_ap_records(wifictl_ap_records_t *out);
 
 /**
- * @brief Returns AP record on given index
- * 
- * @param index 
- * @return const wifi_ap_record_t* 
+ * @brief Copies the AP record at the given index into caller-owned storage.
+ *
+ * Returns a snapshot instead of a pointer into the scanned array, so a scan that
+ * runs concurrently cannot tear the record the caller is about to attack.
+ *
+ * @param index index into the last scan result
+ * @param out destination record
+ * @return true when the index was in range
  */
-const wifi_ap_record_t *wifictl_get_ap_record(unsigned index);
+bool wifictl_copy_ap_record(unsigned index, wifi_ap_record_t *out);
 
 #endif
