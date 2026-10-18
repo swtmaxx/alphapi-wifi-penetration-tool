@@ -27,8 +27,11 @@
 
 static const char *TAG = "client_counter";
 
-#define CLIENT_COUNT_MAX_AP      32
-#define CLIENT_COUNT_MAX_CLIENTS 16
+/* Internal DRAM is the scarce resource here (the ESP-IDF 6.x image needs
+   ~24 KB more of it than 5.0 did). 16 APs x 8 clients is plenty for a
+   13-channel sweep; the counters are an estimate anyway. */
+#define CLIENT_COUNT_MAX_AP      16
+#define CLIENT_COUNT_MAX_CLIENTS 8
 #define CLIENT_COUNT_DWELL_MS    2000
 #define CLIENT_COUNT_MAX_CHANNEL 13
 

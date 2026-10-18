@@ -21,13 +21,13 @@ lines.append("")
 lines.append("// This file was generated from utils/%s using gzip and xxd-compatible formatting." % os.path.basename(src))
 lines.append("// Regenerate with: python components/webserver/utils/gen_page_header.py %s %s %s" % (src, dst, name))
 lines.append("// MIT licensed; see LICENSE in the repository root.")
-lines.append("unsigned char %s[] = {" % name)
+lines.append("const unsigned char %s[] = {" % name)
 per = 12
 for i in range(0, len(data), per):
     chunk = data[i:i+per]
     lines.append("  " + ", ".join("0X%02X" % b for b in chunk) + ",")
 lines.append("};")
-lines.append("unsigned int %s_len = %d;" % (name, len(data)))
+lines.append("const unsigned int %s_len = %d;" % (name, len(data)))
 lines.append("")
 lines.append("#endif")
 

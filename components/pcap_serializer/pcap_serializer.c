@@ -52,7 +52,7 @@ static const char *TAG = "pcap_serializer";
 #endif
 #define PCAP_FS_NAME_MAX ((unsigned) CONFIG_SPIFFS_OBJ_NAME_LEN - 1)
 #define PCAP_DIR_PATH    PCAP_BASE_PATH
-#define WRITE_BUF_SIZE   4096
+#define WRITE_BUF_SIZE   2048
 
 static unsigned pcap_size = 0;
 static unsigned pcap_frames = 0;

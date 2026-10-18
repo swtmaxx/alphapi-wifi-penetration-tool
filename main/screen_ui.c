@@ -414,8 +414,9 @@ static void format_size(char *out, size_t out_size, unsigned bytes)
     }
 }
 
-/* Shared between drawing and navigation so the list is scanned once per redraw. */
-static pcap_file_info_t capture_cache[PCAP_LIST_MAX * 4];
+/* 32 entries is enough for the on-device list (six are visible at a time); the
+   web UI paginates independently. Each entry is ~68 B of internal DRAM. */
+static pcap_file_info_t capture_cache[PCAP_LIST_MAX / 2];
 static unsigned capture_cache_count = 0;
 static unsigned capture_total_count = 0;
 /* Name captured when the confirmation page opens, so a list refresh cannot

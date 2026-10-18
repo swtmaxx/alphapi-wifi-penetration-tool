@@ -4,7 +4,7 @@
 // This file was generated from utils/index.html using gzip and xxd-compatible formatting.
 // Regenerate with: python components/webserver/utils/gen_page_header.py components/webserver/utils/index.html components/webserver/pages/page_index.h page_index
 // MIT licensed; see LICENSE in the repository root.
-unsigned char page_index[] = {
+const unsigned char page_index[] = {
   0X1F, 0X8B, 0X08, 0X00, 0X00, 0X00, 0X00, 0X00, 0X02, 0XFF, 0XED, 0X3D,
   0X6B, 0X77, 0X14, 0XC7, 0X95, 0XDF, 0XFD, 0X2B, 0XCA, 0XED, 0X93, 0X30,
   0X03, 0X33, 0XAD, 0X99, 0XD1, 0XC3, 0X7A, 0X3B, 0X42, 0XC8, 0X86, 0XB5,
@@ -597,6 +597,6 @@ unsigned char page_index[] = {
   0XD1, 0XF4, 0X1B, 0XDD, 0XF4, 0XFF, 0X69, 0XFC, 0X5F, 0X0F, 0X58, 0X28,
   0XBD, 0XB8, 0X71, 0X00, 0X00,
 };
-unsigned int page_index_len = 7085;
+const unsigned int page_index_len = 7085;
 
 #endif

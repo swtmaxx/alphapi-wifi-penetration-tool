@@ -15,7 +15,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
 
-#define DEBUG_LOG_LINE_COUNT 64
+/* Keep the ring small: every line lives in internal DRAM, which is the scarce
+   resource on this chip (the ESP-IDF 6.x image needs ~24 KB more of it than
+   5.0 did). 32 lines is plenty for post-mortem diagnosis over /logs. */
+#define DEBUG_LOG_LINE_COUNT 16
 #define DEBUG_LOG_LINE_MAX   128
 
 static char log_lines[DEBUG_LOG_LINE_COUNT][DEBUG_LOG_LINE_MAX];
