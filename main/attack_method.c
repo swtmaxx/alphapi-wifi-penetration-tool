@@ -102,6 +102,29 @@ void attack_method_broadcast_stop(){
 }
 
 /**
+ * @brief Map a scanned AP's authmode onto a mode the soft-AP can advertise.
+ *
+ * The clone only has to look like the target long enough for a client to try
+ * the 4-way handshake, so enterprise/WAPI/OWE (and the WPA3-EXT-PSK modes that
+ * ESP-IDF 6.x turned into placeholders) are mapped to WPA2-PSK. Passing such a
+ * mode through would make esp_wifi_set_config() reject the whole clone.
+ */
+static wifi_auth_mode_t cloneable_authmode(wifi_auth_mode_t mode)
+{
+    switch (mode) {
+        case WIFI_AUTH_OPEN:
+        case WIFI_AUTH_WPA_PSK:
+        case WIFI_AUTH_WPA2_PSK:
+        case WIFI_AUTH_WPA_WPA2_PSK:
+        case WIFI_AUTH_WPA3_PSK:
+        case WIFI_AUTH_WPA2_WPA3_PSK:
+            return mode;
+        default:
+            return WIFI_AUTH_WPA2_PSK;
+    }
+}
+
+/**
  * @note BSSID is MAC address of APs Wi-Fi interface
  * 
  * @param ap_record target AP that will be cloned/duplicated
@@ -117,7 +140,7 @@ void attack_method_rogueap(const wifi_ap_record_t *ap_record){
         .ap = {
             .ssid_len = strlen((char *)ap_record->ssid),
             .channel = ap_record->primary,
-            .authmode = ap_record->authmode,
+            .authmode = cloneable_authmode(ap_record->authmode),
             .max_connection = 1
         },
     };
