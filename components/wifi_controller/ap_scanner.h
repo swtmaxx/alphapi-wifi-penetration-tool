@@ -47,4 +47,9 @@ bool wifictl_copy_ap_records(wifictl_ap_records_t *out);
  */
 bool wifictl_copy_ap_record(unsigned index, wifi_ap_record_t *out);
 
+/**
+ * @brief Creates the scanner mutex before any task can race for it.
+ */
+bool wifictl_ap_scanner_early_init(void);
+
 #endif

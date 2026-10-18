@@ -26,12 +26,6 @@
 void wifictl_ap_start(wifi_config_t *wifi_config);
 
 /**
- * @brief Stops running AP
- * 
- */
-void wifictl_ap_stop();
-
-/**
  * @brief Starts default management AP
  * 
  */
@@ -95,4 +89,13 @@ void wifictl_set_channel(uint8_t channel);
  * @param channel channel in range 1 - 13
  */
 void wifictl_move_mgmt_ap_to_channel(uint8_t channel);
+
+/**
+ * @brief Creates the component locks before any task can race for them.
+ *
+ * The lazy initialisers are not thread safe: two tasks entering them for the
+ * first time could create two mutexes (or two event loops) and then use
+ * different ones. Call this from app_main, before tasks are started.
+ */
+bool wifictl_early_init(void);
 #endif

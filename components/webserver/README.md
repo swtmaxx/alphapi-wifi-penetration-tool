@@ -9,14 +9,24 @@ HTML sites are stored in RAM and are defined as a constant char array in `pages/
 Currently the Webserver is started by calling `webserver_run()` which registers all available endpoints and runs until ESP32 shuts down.
 
 ### Endpoints
-This webserver implements few enpoints that are used by JavaScript client.
-- **`/`** displayes index.html page
+This webserver implements the endpoints used by the JavaScript client (plus a
+few used by the on-device UI and by scripts).
+- **`/`** serves the control page
 - **`/status`** returns attack status in binary
 - **`/reset`** tells the application to reset attack status to default READY state
-- **`/ap-list`** scans near APs and displays them to table
+- **`/ap-list`** scans near APs and returns 41-byte records
 - **`/run-attack`** sends configuration back to the application
 - **`/capture.pcap`** provides PCAP formatted file for download
 - **`/capture.hccapx`** provides HCCAPX formatted file for download
+- **`/pcap-list`** lists stored PCAP and PMKID files as JSON
+- **`/capture-file?name=...`** downloads one stored file
+- **`/pcap-delete`**, **`/pcap-delete-all`** remove stored files
+- **`/storage-status`** reports SPIFFS usage and error state
+- **`/count-clients`**, **`/count-clients/status`** start/poll a client sweep
+- **`/logs`** returns the in-RAM log ring
+
+`/ap-list` and `/count-clients` refuse to run while an attack owns the radio,
+because scanning re-tunes the radio and restarts the management AP.
 
 ### JavaScript client
 Endpoints are called using AJAX calls from JavaScript provided on `index.html` page. It also parser reponses from webserver from binary to human readble form.

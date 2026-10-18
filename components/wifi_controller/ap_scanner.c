@@ -34,6 +34,11 @@ static bool ensure_scanner_mutex(void)
     return scanner_mutex != NULL;
 }
 
+bool wifictl_ap_scanner_early_init(void)
+{
+    return ensure_scanner_mutex();
+}
+
 esp_err_t wifictl_scan_nearby_aps(void)
 {
     if (!ensure_scanner_mutex()) return ESP_ERR_NO_MEM;

@@ -25,10 +25,6 @@ static const char* TAG = "wifi_controller";
 static bool wifi_init = false;
 static uint8_t original_mac_ap[6];
 
-static void wifi_event_handler(void *event_handler_arg, esp_event_base_t event_base, int32_t event_id, void *event_data){
-
-}
-
 /**
  * @brief Initializes Wi-Fi interface into APSTA mode and starts it.
  * 
@@ -45,8 +41,6 @@ static void wifi_init_apsta(){
     ESP_ERROR_CHECK(esp_wifi_init(&wifi_init_config));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
-
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
 
     // save original AP MAC address
     ESP_ERROR_CHECK(esp_wifi_get_mac(WIFI_IF_AP, original_mac_ap));
@@ -69,21 +63,6 @@ void wifictl_ap_start(wifi_config_t *wifi_config) {
         return;
     }
     ESP_LOGI(TAG, "AP started with SSID=%s", wifi_config->ap.ssid);
-}
-
-void wifictl_ap_stop(){
-    ESP_LOGD(TAG, "Stopping AP...");
-    wifi_config_t wifi_config = {
-        .ap = {
-            .max_connection = 0
-        },
-    };
-    esp_err_t err = esp_wifi_set_config(WIFI_IF_AP, &wifi_config);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to stop the AP: %s", esp_err_to_name(err));
-        return;
-    }
-    ESP_LOGD(TAG, "AP stopped");
 }
 
 void wifictl_mgmt_ap_start(){
@@ -230,4 +209,15 @@ void wifictl_set_channel(uint8_t channel){
     } else {
         ESP_LOGI(TAG, "Wi-Fi channel set to %u", channel);
     }
+}
+
+bool wifictl_early_init(void)
+{
+    /* Create every Wi-Fi-side lock (and the sniffer event loop) once, before
+       tasks start: the lazy initialisers were not thread safe and could create
+       two mutexes or two event loops. */
+    bool ok = wifictl_ap_scanner_early_init();
+    ok = wifictl_client_counter_early_init() && ok;
+    ok = wifictl_sniffer_loop_ready() && ok;
+    return ok;
 }

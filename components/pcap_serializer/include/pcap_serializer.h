@@ -52,6 +52,11 @@ typedef struct {
 bool pcap_serializer_init(const uint8_t *ssid, unsigned ssid_len);
 
 /**
+ * @brief Creates the serializer mutex before any task can race for it.
+ */
+bool pcap_serializer_early_init(void);
+
+/**
  * @brief Appends a frame. Data is buffered in RAM and flushed to Flash when full.
  * 
  * @param buffer frame buffer that should be appended to PCAP

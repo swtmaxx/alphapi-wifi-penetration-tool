@@ -23,6 +23,7 @@
 #include "attack.h"
 #include "debug_log.h"
 #include "screen_ui.h"
+#include "pcap_serializer.h"
 #include "wifi_controller.h"
 #include "webserver.h"
 
@@ -45,6 +46,13 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    /* Create the component locks and the sniffer event loop before any task can
+       race for them (the lazy initialisers were not thread safe). */
+    if (!wifictl_early_init() || !pcap_serializer_early_init()) {
+        printf("warning: failed to create internal locks\n");
+    }
+
     wifictl_mgmt_ap_start();
     attack_init();
     webserver_run();

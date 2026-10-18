@@ -321,8 +321,26 @@ static bool has_extension(const char *name, const char *extension)
     return dot != NULL && strcmp(dot, extension) == 0;
 }
 
+/**
+ * @brief Whether a stored name only uses the characters we generate.
+ *
+ * Names are echoed back in the Content-Disposition header, so anything else
+ * (quotes, CR/LF, control bytes) must never be treated as a stored file.
+ */
+static bool has_safe_name_chars(const char *name)
+{
+    for (const char *p = name; *p != '\0'; p++) {
+        char c = *p;
+        bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                  (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.';
+        if (!ok) return false;
+    }
+    return true;
+}
+
 static bool is_pcap_name(const char *name)
 {
+    if (!has_safe_name_chars(name)) return false;
     if (strcmp(name, "capture.pcap") == 0) return true;
     unsigned index = 0;
     return parse_indexed_name(name, "capture_", &index) &&
@@ -331,6 +349,7 @@ static bool is_pcap_name(const char *name)
 
 static bool is_result_name(const char *name)
 {
+    if (!has_safe_name_chars(name)) return false;
     unsigned index = 0;
     return parse_indexed_name(name, "pmkid_", &index) &&
            has_extension(name, ".txt");
@@ -367,6 +386,11 @@ static void pick_next_capture_path(void)
         snprintf(pcap_cur_path, sizeof(pcap_cur_path),
                  PCAP_FILE_PATH_FMT, pcap_file_index);
     }
+}
+
+bool pcap_serializer_early_init(void)
+{
+    return ensure_mutex();
 }
 
 bool pcap_serializer_init(const uint8_t *ssid, unsigned ssid_len)

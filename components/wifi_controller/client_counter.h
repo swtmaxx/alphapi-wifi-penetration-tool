@@ -47,4 +47,9 @@ uint8_t wifictl_get_client_count(const uint8_t bssid[6]);
  */
 void wifictl_clear_client_counts(void);
 
+/**
+ * @brief Creates the counter mutex before any task can race for it.
+ */
+bool wifictl_client_counter_early_init(void);
+
 #endif /* CLIENT_COUNTER_H */

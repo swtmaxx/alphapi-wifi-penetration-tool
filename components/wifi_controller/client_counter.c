@@ -56,6 +56,11 @@ static bool ensure_mutex(void)
     return counter_mutex != NULL;
 }
 
+bool wifictl_client_counter_early_init(void)
+{
+    return ensure_mutex();
+}
+
 void wifictl_clear_client_counts(void)
 {
     if (!ensure_mutex()) return;

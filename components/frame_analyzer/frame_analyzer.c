@@ -15,6 +15,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_event.h"
+#include "freertos/FreeRTOS.h"
 
 #include "wifi_controller.h"
 #include "frame_analyzer_parser.h"
@@ -26,6 +27,8 @@ static search_type_t search_type = -1;
 /* Handlers must be registered exactly once: unregistering an unknown handler
    returns an error that would otherwise abort the device via ESP_ERROR_CHECK. */
 static bool analyzer_registered = false;
+/* capture_start() runs on the attack task, the handler on the sniffer task. */
+static portMUX_TYPE analyzer_mux = portMUX_INITIALIZER_UNLOCKED;
 
 
 /**
@@ -41,7 +44,14 @@ static void data_frame_handler(void *args, esp_event_base_t event_base, int32_t 
     wifi_promiscuous_pkt_t *frame = (wifi_promiscuous_pkt_t *) event_data;
     unsigned eapol_len = 0;
 
-    if(!is_frame_bssid_matching(frame, target_bssid)){
+    uint8_t bssid[6];
+    search_type_t local_search;
+    portENTER_CRITICAL(&analyzer_mux);
+    memcpy(bssid, target_bssid, 6);
+    local_search = search_type;
+    portEXIT_CRITICAL(&analyzer_mux);
+
+    if(!is_frame_bssid_matching(frame, bssid)){
         ESP_LOGV(TAG, "Not matching BSSIDs.");
         return;
     }
@@ -65,14 +75,14 @@ static void data_frame_handler(void *args, esp_event_base_t event_base, int32_t 
     esp_event_loop_handle_t loop = wifictl_sniffer_event_loop();
     if (loop == NULL) return;
 
-    if(search_type == SEARCH_HANDSHAKE){
+    if(local_search == SEARCH_HANDSHAKE){
         esp_event_post_to(loop, FRAME_ANALYZER_EVENTS, DATA_FRAME_EVENT_EAPOLKEY_FRAME,
                           frame,
                           sizeof(wifi_promiscuous_pkt_t) + frame->rx_ctrl.sig_len, 0);
         return;
     }
 
-    if(search_type == SEARCH_PMKID){
+    if(local_search == SEARCH_PMKID){
         pmkid_item_t *pmkid_items;
         if((pmkid_items = parse_pmkid(eapol_key_packet, eapol_len)) == NULL){
             return;
@@ -85,8 +95,10 @@ static void data_frame_handler(void *args, esp_event_base_t event_base, int32_t 
 
 void frame_analyzer_capture_start(search_type_t search_type_arg, const uint8_t *bssid){
     ESP_LOGI(TAG, "Frame analysis started...");
+    portENTER_CRITICAL(&analyzer_mux);
     search_type = search_type_arg;
     if (bssid != NULL) memcpy(&target_bssid, bssid, 6);
+    portEXIT_CRITICAL(&analyzer_mux);
 
     /* Frames arrive on the sniffer's private loop, not the default loop. */
     esp_event_loop_handle_t loop = wifictl_sniffer_event_loop();
