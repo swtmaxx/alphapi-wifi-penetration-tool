@@ -20,7 +20,7 @@
 - 客户端探测，逐信道统计目标 AP 附近的客户端。
 - WPA/WPA2 握手抓包和 HCCAPX 结果导出。
 - PMKID 抓取和文本结果持久化。
-- PCAP 文件写入 SPIFFS，可在网页中查看和下载（删除通过屏幕菜单或 `/pcap-delete` 接口）。
+- PCAP 文件写入 LittleFS 存储分区，可在网页中查看和下载（删除通过屏幕菜单或 `/pcap-delete` 接口）。
 - 网页一次下载全部已保存文件，并显示存储总量、已用空间和剩余空间。
 - 屏幕端提供设备信息、网络扫描、攻击配置和抓包文件管理。
 - 设备日志可通过网页 `/logs` 接口读取。
@@ -44,7 +44,7 @@
 | `nvs` | `0x9000` | 24 KB | ESP-IDF NVS |
 | `phy_init` | `0xf000` | 4 KB | PHY 校准数据 |
 | `factory` | `0x10000` | 3 MB | 应用固件 |
-| `storage` | `0x310000` | 4 MB | SPIFFS 抓包和 PMKID 结果 |
+| `storage` | `0x310000` | 4 MB | LittleFS 抓包和 PMKID 结果 |
 
 抓包文件保存在 `storage` 分区。刷写启动器、分区表和应用时不需要擦除这个分区；不要执行整片 `erase-flash`，除非你已经备份了设备数据。
 
@@ -138,7 +138,7 @@ capture_002.pcap
 pmkid_001_HomeWiFi.txt
 ```
 
-文件名标签只保留 ASCII 字母、数字、连字符和下划线；中文或其他字符会被替换为下划线。隐藏 SSID 可能生成没有标签的文件名，但不会因此自动获得真实 ESSID。过长的 SSID 标签会自动截短，以保证文件名不超出 SPIFFS 的长度上限（否则在部分长 SSID 的网络下根本无法保存抓包）。
+文件名标签只保留 ASCII 字母、数字、连字符和下划线；中文或其他字符会被替换为下划线。隐藏 SSID 可能生成没有标签的文件名，但不会因此自动获得真实 ESSID。过长的 SSID 标签会自动截短，以保证文件名不超出文件系统的长度上限（LittleFS 默认 63 字符；早期 SPIFFS 版本只有 31 字符）。
 
 `pmkid_*.txt` 的每一行是 hashcat `-m 22000` 可直接使用的格式，ESSID 为十六进制：
 
@@ -152,7 +152,7 @@ WPA*01*<PMKID>*<MAC_AP>*<MAC_STA>*<ESSID hex>***
 hashcat -m 22000 pmkid_001_HomeWiFi.txt wordlist.txt
 ```
 
-设备使用 4 MB SPIFFS 保存这些文件，不自动分卷，也不自动删除旧文件。空间不足或写入失败时，攻击会停止并在网页和屏幕上报告存储错误。
+设备使用 4 MB LittleFS 保存这些文件，不自动分卷，也不自动删除旧文件。空间不足或写入失败时，攻击会停止并在网页和屏幕上报告存储错误。每次写入缓冲后都会 `fflush()` + `fsync()`，掉电不会丢掉已写入的帧。
 
 挂载失败时不会自动格式化分区：已经写入过数据的分区即使挂载失败也会原样保留，网页和屏幕会报告 `mount_error`，请先自行备份。唯一的例外是全新刷写后仍然完全空白（全 `0xFF`）的分区，它会在首次使用时自动格式化，否则设备无法保存任何抓包。
 
@@ -171,10 +171,29 @@ hashcat -m 22000 pmkid_001_HomeWiFi.txt wordlist.txt
 - `/pcap-list`：列出所有已保存的 PCAP 和 PMKID 文件。
 - `/capture-file?name=...`：下载指定文件。
 - `/pcap-delete`、`/pcap-delete-all`：删除文件。
-- `/storage-status`：读取 SPIFFS 空间和错误状态。
+- `/storage-status`：读取存储空间和错误状态。
+- `/storage-format`：擦除并重建存储分区（**会删除所有抓包**，仅用于从 SPIFFS 升级后的迁移）。
 - `/logs`：读取最近的设备日志。
 
 客户端探测和攻击会占用 ESP32 的无线电信道，过程中管理热点可能暂时无法访问；完成后的信道恢复行为取决于具体攻击方式，若网页未恢复，请等待设备结束任务后重新连接管理热点。
+
+## 存储格式迁移（从 SPIFFS 升级）
+
+本版本把抓包分区从 SPIFFS 换成了 LittleFS（文件名上限 63 字符、掉电更安全、分区写满后不会像 SPIFFS 那样急剧变慢）。两者**磁盘格式不兼容**，所以：
+
+- 全新设备（分区为空白）会自动格式化，无需操作。
+- 从旧固件升级的设备，旧抓包**无法读取**：网页与屏幕会报告 `mount_error`，此时调用一次 `POST /storage-format` 即可重建分区（**会删除旧抓包，请先尽量下载备份**）。
+- 刷写三段固件不会动 `0x310000` 起的 storage 分区，但格式变化后需要上述一次格式化。
+
+## 启用 PSRAM（可选）
+
+板载 2 MB PSRAM，当前默认**未启用**（`# CONFIG_SPIRAM is not set`）。启用后可以把日志环形缓冲、抓包列表缓存、客户端计数表搬到外部 RAM，缓解内部 RAM 紧张（`log_lines`、`capture_cache`、`entries` 已带 `LARGE_RAM_ATTR`，会在启用时自动迁移）。
+
+启用步骤（需要上机验证，配置不对会导致设备无法启动）：
+
+1. 在 `sdkconfig.alphapi_esp32s2`（或 `menuconfig`）中启用 `CONFIG_SPIRAM=y`，并把 PSRAM 类型/速度设成与板子一致（ESP32-S2 为 quad SPI）。
+2. 重新构建并烧写，开机后查看 `idf.py size` / 屏幕是否正常。
+3. 若设备无法启动，刷回上一版固件即可（不影响 storage 分区）。
 
 ## 已知限制
 
@@ -190,7 +209,7 @@ hashcat -m 22000 pmkid_001_HomeWiFi.txt wordlist.txt
 main/                         攻击流程、屏幕 UI 和应用入口
 components/wifi_controller/   AP、STA、扫描、嗅探和客户端探测
 components/frame_analyzer/    EAPOL/PMKID 帧分析
-components/pcap_serializer/   PCAP 和 SPIFFS 文件管理
+components/pcap_serializer/   PCAP 和 LittleFS 文件管理
 components/hccapx_serializer/ HCCAPX 结果序列化
 components/webserver/         HTTP API 和中文网页
 components/display/            AlphaPi ST7789 显示驱动和字库

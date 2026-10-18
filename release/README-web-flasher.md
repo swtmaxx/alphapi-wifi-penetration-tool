@@ -23,7 +23,7 @@
 
 ## 推荐：三段刷写
 
-三段方式只更新启动器、分区表和应用区，保留 `0x310000` 起的 `storage` SPIFFS 分区，因此已有抓包文件和 PMKID 结果会保留。
+三段方式只更新启动器、分区表和应用区，保留 `0x310000` 起的 `storage` 分区，因此已有抓包文件和 PMKID 结果会保留。
 
 1. 双击 `start-flasher.cmd`，或在本目录运行 `python -m http.server 8000 --bind 127.0.0.1`。
 2. 使用桌面版 Chrome 或 Edge 打开 `http://localhost:8000/alphapi-one-s-web-flasher.html`。

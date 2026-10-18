@@ -1,6 +1,6 @@
 /**
  * @file pcap_serializer.c
- * @brief PCAP serializer that streams captured frames to SPIFFS on Flash.
+ * @brief PCAP serializer that streams captured frames to LittleFS on Flash.
  *
  * Frames are accumulated in a small RAM write buffer and flushed to the
  * capture file whenever it fills, so the WiFi callback never blocks on a
@@ -15,14 +15,15 @@
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
+#include <unistd.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
 #include "esp_log.h"
 #include "esp_err.h"
-#include "esp_spiffs.h"
 #include "esp_partition.h"
-/* CONFIG_SPIFFS_OBJ_NAME_LEN: the file-name budget depends on it. */
+#include "esp_littlefs.h"
+/* CONFIG_LITTLEFS_OBJ_NAME_LEN: the file-name budget depends on it. */
 #include "sdkconfig.h"
 #include <dirent.h>
 #include <sys/stat.h>
@@ -44,13 +45,14 @@ static const char *TAG = "pcap_serializer";
  * "capture_001504.pcap", which the index parser reads as 1504. */
 #define PCAP_FILE_PATH_TAGGED_FMT PCAP_BASE_PATH "/%s_%03u_%s%s"
 #define PCAP_SSID_TAG_MAX 24
-/* SPIFFS keeps the object name (basename) in a buffer of
- * CONFIG_SPIFFS_OBJ_NAME_LEN bytes, so a name may use one character less:
- * "... this length include the zero-termination character". */
-#ifndef CONFIG_SPIFFS_OBJ_NAME_LEN
-#define CONFIG_SPIFFS_OBJ_NAME_LEN 32
+/* LittleFS keeps the object name (basename) in a buffer of
+ * CONFIG_LITTLEFS_OBJ_NAME_LEN bytes, so a name may use one character less:
+ * "Maximum object name length including NULL terminator." The default is 64,
+ * i.e. 63 usable characters (SPIFFS used to allow only 31). */
+#ifndef CONFIG_LITTLEFS_OBJ_NAME_LEN
+#define CONFIG_LITTLEFS_OBJ_NAME_LEN 64
 #endif
-#define PCAP_FS_NAME_MAX ((unsigned) CONFIG_SPIFFS_OBJ_NAME_LEN - 1)
+#define PCAP_FS_NAME_MAX ((unsigned) CONFIG_LITTLEFS_OBJ_NAME_LEN - 1)
 #define PCAP_DIR_PATH    PCAP_BASE_PATH
 #define WRITE_BUF_SIZE   2048
 
@@ -62,7 +64,7 @@ static unsigned pcap_file_index = 1;
 static char pcap_ssid_tag[PCAP_SSID_TAG_MAX + 1] = "";
 static uint8_t write_buf[WRITE_BUF_SIZE];
 static unsigned write_buf_used = 0;
-static bool spiffs_mounted = false;
+static bool storage_mounted = false;
 static pcap_storage_state_t storage_state = PCAP_STORAGE_MOUNT_ERROR;
 static SemaphoreHandle_t pcap_mutex = NULL;
 
@@ -93,7 +95,7 @@ static void unlock_serializer(void)
 static bool partition_is_blank(void)
 {
     const esp_partition_t *part = esp_partition_find_first(
-        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, NULL);
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_LITTLEFS, NULL);
     if (part == NULL) return false;
 
     uint8_t probe[256];
@@ -112,37 +114,42 @@ static bool partition_is_blank(void)
     return true;
 }
 
-static bool mount_spiffs(void)
+static bool mount_storage(void)
 {
-    if (spiffs_mounted) return true;
+    if (storage_mounted) return true;
 
-    esp_vfs_spiffs_conf_t conf = {
+    esp_vfs_littlefs_conf_t conf = {
         .base_path = PCAP_BASE_PATH,
         .partition_label = NULL,
-        .max_files = 2,
         /* Do not format on a plain mount failure: that would silently wipe
          * captures that may still be needed. */
         .format_if_mount_failed = false,
+        .read_only = false,
+        .dont_mount = false,
+        /* Let a freshly formatted filesystem grow to the whole partition. */
+        .grow_on_mount = true,
     };
-    esp_err_t ret = esp_vfs_spiffs_register(&conf);
+    esp_err_t ret = esp_vfs_littlefs_register(&conf);
     if (ret != ESP_OK) {
         /* A freshly flashed device has an untouched (all-0xFF) partition. It
            holds nothing, so formatting it makes capturing work out of the box
            without ever risking stored captures. */
         if (partition_is_blank()) {
             ESP_LOGW(TAG, "Capture partition is blank; formatting it for first use");
-            (void) esp_vfs_spiffs_unregister(NULL);
+            (void) esp_vfs_littlefs_unregister(NULL);
             conf.format_if_mount_failed = true;
-            ret = esp_vfs_spiffs_register(&conf);
+            ret = esp_vfs_littlefs_register(&conf);
         }
     }
     if (ret != ESP_OK) {
         storage_state = PCAP_STORAGE_MOUNT_ERROR;
-        ESP_LOGE(TAG, "Failed to mount SPIFFS (%s); existing captures were left untouched",
+        ESP_LOGE(TAG, "Failed to mount LittleFS (%s); existing captures were left untouched. "
+                      "If this device was upgraded from the SPIFFS build, format the storage "
+                      "partition once (POST /storage-format).",
                  esp_err_to_name(ret));
         return false;
     }
-    spiffs_mounted = true;
+    storage_mounted = true;
     storage_state = PCAP_STORAGE_OK;
     return true;
 }
@@ -173,6 +180,13 @@ static bool flush_write_buf(void)
     if (fflush(pcap_file) != 0) {
         set_write_error();
         ESP_LOGE(TAG, "Failed to flush PCAP file");
+        return false;
+    }
+    /* SPIFFS wrote the data on fflush(); LittleFS only does so on fsync(). Ask
+       explicitly so a power cut cannot lose a capture on either backend. */
+    if (fsync(fileno(pcap_file)) != 0 && errno != EINVAL && errno != ENOSYS) {
+        set_write_error();
+        ESP_LOGE(TAG, "Failed to sync PCAP file");
         return false;
     }
     return true;
@@ -388,6 +402,38 @@ static void pick_next_capture_path(void)
     }
 }
 
+/**
+ * @brief Erases and re-creates the capture filesystem.
+ *
+ * Needed once when the storage backend changed (a SPIFFS partition cannot be
+ * mounted as LittleFS). Destroys every stored capture, so it is only reachable
+ * through an explicit request.
+ */
+bool pcap_serializer_format_storage(void)
+{
+    if (!ensure_mutex()) return false;
+
+    lock_serializer();
+    if (pcap_file != NULL) {
+        fclose(pcap_file);
+        pcap_file = NULL;
+    }
+    write_buf_used = 0;
+    (void) esp_vfs_littlefs_unregister(NULL);
+    storage_mounted = false;
+
+    esp_err_t err = esp_littlefs_format(NULL);
+    bool ok = (err == ESP_OK);
+    if (!ok) {
+        ESP_LOGE(TAG, "Failed to format the capture partition: %s", esp_err_to_name(err));
+        storage_state = PCAP_STORAGE_IO_ERROR;
+    } else {
+        ok = mount_storage();
+    }
+    unlock_serializer();
+    return ok;
+}
+
 bool pcap_serializer_early_init(void)
 {
     return ensure_mutex();
@@ -400,7 +446,7 @@ bool pcap_serializer_init(const uint8_t *ssid, unsigned ssid_len)
     if (!ensure_mutex()) return false;
     lock_serializer();
 
-    if (!mount_spiffs()) {
+    if (!mount_storage()) {
         unlock_serializer();
         return false;
     }
@@ -579,7 +625,7 @@ unsigned pcap_serializer_list(pcap_file_info_t *out, unsigned max)
     if (!ensure_mutex()) return 0;
 
     lock_serializer();
-    if (!mount_spiffs()) {
+    if (!mount_storage()) {
         unlock_serializer();
         return 0;
     }
@@ -620,7 +666,7 @@ bool pcap_serializer_list_page(pcap_file_info_t *out, unsigned max,
 
     *total = 0;
     lock_serializer();
-    if (!mount_spiffs()) {
+    if (!mount_storage()) {
         unlock_serializer();
         return false;
     }
@@ -694,7 +740,7 @@ bool pcap_serializer_read_file(const char *name, unsigned offset, uint8_t *buf, 
     if (!ensure_mutex()) return false;
 
     lock_serializer();
-    if (!mount_spiffs()) {
+    if (!mount_storage()) {
         unlock_serializer();
         return false;
     }
@@ -775,7 +821,7 @@ bool pcap_serializer_delete(const char *name)
     if (!ensure_mutex()) return false;
 
     lock_serializer();
-    if (!mount_spiffs()) {
+    if (!mount_storage()) {
         unlock_serializer();
         return false;
     }
@@ -803,7 +849,7 @@ bool pcap_serializer_delete_all(unsigned *removed)
     *removed = 0;
 
     lock_serializer();
-    if (!mount_spiffs()) {
+    if (!mount_storage()) {
         unlock_serializer();
         return false;
     }
@@ -848,7 +894,7 @@ bool pcap_serializer_get_file_info(const char *name, pcap_file_info_t *out)
         strchr(name, '\\') != NULL || !ensure_mutex()) return false;
 
     lock_serializer();
-    if (!mount_spiffs()) {
+    if (!mount_storage()) {
         unlock_serializer();
         return false;
     }
@@ -878,7 +924,7 @@ bool pcap_serializer_write_text(const char *prefix, const uint8_t *ssid,
     if (!ensure_mutex()) return false;
 
     lock_serializer();
-    if (!mount_spiffs()) {
+    if (!mount_storage()) {
         unlock_serializer();
         return false;
     }
@@ -933,7 +979,7 @@ unsigned pcap_serializer_list_text(pcap_file_info_t *out, unsigned max)
     if (!ensure_mutex()) return 0;
 
     lock_serializer();
-    if (!mount_spiffs()) {
+    if (!mount_storage()) {
         unlock_serializer();
         return 0;
     }
@@ -979,7 +1025,7 @@ bool pcap_serializer_get_storage_info(pcap_storage_info_t *info)
     memset(info, 0, sizeof(*info));
 
     lock_serializer();
-    if (!mount_spiffs()) {
+    if (!mount_storage()) {
         info->state = storage_state;
         unlock_serializer();
         return false;
@@ -987,7 +1033,7 @@ bool pcap_serializer_get_storage_info(pcap_storage_info_t *info)
 
     size_t total = 0;
     size_t used = 0;
-    esp_err_t ret = esp_spiffs_info(NULL, &total, &used);
+    esp_err_t ret = esp_littlefs_info(NULL, &total, &used);
     if (ret != ESP_OK) {
         /* Report the failure without touching storage_state: that flag gates the
            capture write path, so a read-only status query must never be able to

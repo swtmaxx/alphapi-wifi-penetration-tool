@@ -2,7 +2,7 @@
 ## PCAP Serializer component
 
 This component writes captured 802.11 frames to a PCAP file on the `storage`
-SPIFFS partition and manages the files that live there.
+LittleFS partition and manages the files that live there.
 
 It is based on the [Wireshark LibPCAP file format reference](https://gitlab.com/wireshark/wireshark/-/wikis/Development/LibpcapFileFormat).
 Frames are accumulated in a small RAM buffer and flushed to Flash when it fills,

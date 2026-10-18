@@ -444,6 +444,35 @@ static httpd_uri_t uri_pcap_list_get = {
     .user_ctx = NULL
 };
 
+/**
+ * @brief Erases and re-creates the capture filesystem.
+ *
+ * Needed once after a storage-backend change (a SPIFFS partition cannot be
+ * mounted as LittleFS). Destroys every stored capture, so it is an explicit
+ * request and it refuses to run while an attack is writing.
+ */
+static esp_err_t uri_storage_format_post_handler(httpd_req_t *req) {
+    if (!request_is_same_origin(req)) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "跨站请求被拒绝");
+    }
+    if (attack_is_running()) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "攻击进行中，请先停止攻击");
+    }
+    set_security_headers(req);
+    if (!pcap_serializer_format_storage()) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "格式化失败");
+    }
+    return httpd_resp_sendstr(req, "存储分区已格式化");
+}
+
+static httpd_uri_t uri_storage_format_post = {
+    .uri = "/storage-format",
+    .method = HTTP_POST,
+    .handler = uri_storage_format_post_handler,
+    .user_ctx = NULL
+};
+
 static httpd_uri_t uri_storage_status_get = {
     .uri = "/storage-status",
     .method = HTTP_GET,
@@ -641,7 +670,7 @@ void webserver_run(){
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     /* The default cap (8) is below the number of endpoints registered here,
        and exceeding it makes httpd_register_uri_handler() fail. */
-    config.max_uri_handlers = 16;
+    config.max_uri_handlers = 20;
     /* Download handlers place a 2 KB stream chunk plus filename buffers on
        the stack, and the stdio read path runs on this same task; the default
        4 KB stack overflows and reboots the device mid-download. */
@@ -658,6 +687,7 @@ void webserver_run(){
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_capture_hccapx_get));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_pcap_list_get));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_storage_status_get));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_storage_format_post));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_capture_file_get));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_pcap_delete_post));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_pcap_delete_all_post));

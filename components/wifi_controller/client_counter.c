@@ -25,6 +25,16 @@
 #include "ap_scanner.h"
 #include "sniffer.h"
 
+/* These tables are only touched by tasks, never by DMA, so they may live in
+   PSRAM when it is enabled (see README: "启用 PSRAM"). With the default build
+   (CONFIG_SPIRAM off) the attribute expands to nothing. */
+#if CONFIG_SPIRAM
+#include "esp_attr.h"
+#define LARGE_RAM_ATTR EXT_RAM_BSS_ATTR
+#else
+#define LARGE_RAM_ATTR
+#endif
+
 static const char *TAG = "client_counter";
 
 /* Internal DRAM is the scarce resource here (the ESP-IDF 6.x image needs
@@ -41,10 +51,10 @@ typedef struct {
     uint8_t count;
 } client_entry_t;
 
-static client_entry_t entries[CLIENT_COUNT_MAX_AP];
+static LARGE_RAM_ATTR client_entry_t entries[CLIENT_COUNT_MAX_AP];
 static unsigned entry_count = 0;
 /* BSSIDs we are counting for, filled at the start of every sweep. */
-static uint8_t tracked_bssids[CLIENT_COUNT_MAX_AP][6];
+static LARGE_RAM_ATTR uint8_t tracked_bssids[CLIENT_COUNT_MAX_AP][6];
 static unsigned tracked_bssid_count = 0;
 static SemaphoreHandle_t counter_mutex = NULL;
 static volatile bool counting_active = false;

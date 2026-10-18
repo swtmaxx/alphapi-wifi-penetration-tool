@@ -21,7 +21,8 @@ few used by the on-device UI and by scripts).
 - **`/pcap-list`** lists stored PCAP and PMKID files as JSON
 - **`/capture-file?name=...`** downloads one stored file
 - **`/pcap-delete`**, **`/pcap-delete-all`** remove stored files
-- **`/storage-status`** reports SPIFFS usage and error state
+- **`/storage-status`** reports storage usage and error state
+- **`/storage-format`** erases and re-creates the capture filesystem (destroys captures)
 - **`/count-clients`**, **`/count-clients/status`** start/poll a client sweep
 - **`/logs`** returns the in-RAM log ring
 

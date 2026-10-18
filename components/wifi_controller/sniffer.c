@@ -23,8 +23,13 @@ ESP_EVENT_DEFINE_BASE(SNIFFER_EVENTS);
 
 /* Dedicated event loop for captured frames so a busy sniffer cannot fill the
    shared default loop and stall unrelated components (e.g. the attack reset
-   posted from the UI task). 64 slots, 0 = drop when full. */
-#define SNIFFER_LOOP_QUEUE_SIZE 64
+   posted from the UI task). 0 = drop when full.
+ *
+ * esp_event copies every event onto the heap, so the queue depth bounds the peak
+ * heap usage: ~1.6 KB per frame, i.e. ~50 KB here. Deeper queues risk OOM when
+ * the consumer is blocked on a SPIFFS write; the drop counter below makes the
+ * trade-off visible. */
+#define SNIFFER_LOOP_QUEUE_SIZE 32
 static esp_event_loop_handle_t sniffer_loop = NULL;
 
 

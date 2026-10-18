@@ -1,6 +1,6 @@
 /**
  * @file pcap_serializer.h
- * @brief PCAP serializer that streams captured frames to SPIFFS on Flash.
+ * @brief PCAP serializer that streams captured frames to LittleFS on Flash.
  *
  * @copyright Copyright (c) 2026 swtmaxx
  * @note MIT licensed, see LICENSE in the repository root.
@@ -39,7 +39,7 @@ typedef struct {
 } pcap_record_header_t;
 
 /**
- * @brief Mounts SPIFFS, opens the capture file and writes the PCAP global header.
+ * @brief Mounts the capture filesystem, opens the capture file and writes the PCAP global header.
  *
  * Has always to be called before pcap_serializer_append_frame().
  * @return true if the capture file is ready for appending.
@@ -55,6 +55,16 @@ bool pcap_serializer_init(const uint8_t *ssid, unsigned ssid_len);
  * @brief Creates the serializer mutex before any task can race for it.
  */
 bool pcap_serializer_early_init(void);
+
+/**
+ * @brief Erases and re-creates the capture filesystem.
+ *
+ * Destroys every stored capture. Needed once after switching the storage backend
+ * (a SPIFFS partition cannot be mounted as LittleFS).
+ *
+ * @return true when the partition was formatted and re-mounted
+ */
+bool pcap_serializer_format_storage(void);
 
 /**
  * @brief Appends a frame. Data is buffered in RAM and flushed to Flash when full.
@@ -108,7 +118,7 @@ typedef enum {
     PCAP_STORAGE_IO_ERROR,
 } pcap_storage_state_t;
 
-/** Snapshot of the SPIFFS storage used for captures and PMKID results. */
+/** Snapshot of the storage partition used for captures and PMKID results. */
 typedef struct {
     bool mounted;
     unsigned total_bytes;

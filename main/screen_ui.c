@@ -25,6 +25,16 @@
 #include "wifi_controller.h"
 #include "wsl_bypasser.h"
 
+/* These tables are only touched by tasks, never by DMA, so they may live in
+   PSRAM when it is enabled (see README: "启用 PSRAM"). With the default build
+   (CONFIG_SPIRAM off) the attribute expands to nothing. */
+#if CONFIG_SPIRAM
+#include "esp_attr.h"
+#define LARGE_RAM_ATTR EXT_RAM_BSS_ATTR
+#else
+#define LARGE_RAM_ATTR
+#endif
+
 #define KEY_ENTER 13
 #define KEY_BACK  12
 #define KEY_UP    11
@@ -425,12 +435,64 @@ static void format_size(char *out, size_t out_size, unsigned bytes)
 
 /* 32 entries is enough for the on-device list (six are visible at a time); the
    web UI paginates independently. Each entry is ~68 B of internal DRAM. */
-static pcap_file_info_t capture_cache[PCAP_LIST_MAX / 2];
+static LARGE_RAM_ATTR pcap_file_info_t capture_cache[PCAP_LIST_MAX / 2];
 static unsigned capture_cache_count = 0;
 static unsigned capture_total_count = 0;
 /* Name captured when the confirmation page opens, so a list refresh cannot
    change what the user is about to delete. */
 static char capture_delete_target_name[PCAP_FILENAME_MAX] = "";
+
+/* Long jobs run on a worker task so the UI keeps sampling keys and redrawing.
+   Running them inline froze the screen for the whole scan (seconds) and dropped
+   key presses, and a SPIFFS delete-all could block for a while too. */
+typedef enum { UI_JOB_NONE = 0, UI_JOB_SCAN, UI_JOB_DELETE_ONE, UI_JOB_DELETE_ALL } ui_job_t;
+
+#define UI_JOB_STACK 4096
+
+static volatile ui_job_t ui_job = UI_JOB_NONE;
+static volatile bool ui_job_done = false;
+static volatile esp_err_t ui_job_result = ESP_OK;
+
+static void ui_job_task(void *arg)
+{
+    ui_job_t job = (ui_job_t) (uintptr_t) arg;
+    esp_err_t result = ESP_OK;
+
+    switch (job) {
+        case UI_JOB_SCAN:
+            result = wifictl_scan_nearby_aps();
+            break;
+        case UI_JOB_DELETE_ONE:
+            if (!pcap_serializer_delete(capture_delete_target_name)) result = ESP_FAIL;
+            break;
+        case UI_JOB_DELETE_ALL: {
+            unsigned removed = 0;
+            if (!pcap_serializer_delete_all(&removed)) result = ESP_FAIL;
+            break;
+        }
+        default:
+            break;
+    }
+
+    ui_job_result = result;
+    ui_job_done = true;
+    vTaskDelete(NULL);
+}
+
+static bool start_ui_job(ui_job_t job)
+{
+    if (ui_job != UI_JOB_NONE) return false;
+    ui_job_done = false;
+    ui_job_result = ESP_OK;
+    ui_job = job;
+    if (xTaskCreate(ui_job_task, "ui_job", UI_JOB_STACK,
+                    (void *) (uintptr_t) job, UI_TASK_PRIO, NULL) != pdPASS) {
+        ui_job = UI_JOB_NONE;
+        ESP_LOGE(UI_TAG, "failed to start background job %d", (int) job);
+        return false;
+    }
+    return true;
+}
 
 static unsigned capture_cache_refresh(void)
 {
@@ -578,26 +640,35 @@ static void request_scan(void)
 
 static void run_pending_scan(void)
 {
-    if (ui.scan_state != SCAN_PENDING) return;
-    ui.scan_state = SCAN_RUNNING;
-    ui.dirty = true;
-    render();
-    vTaskDelay(pdMS_TO_TICKS(50));
-
-    attack_status_t status;
-    if (attack_get_status_snapshot(&status)) {
-        bool running = status.state == RUNNING;
-        attack_free_status_snapshot(&status);
-        if (running) {
+    if (ui.scan_state == SCAN_PENDING) {
+        attack_status_t status;
+        bool attack_running = false;
+        if (attack_get_status_snapshot(&status)) {
+            attack_running = status.state == RUNNING;
+            attack_free_status_snapshot(&status);
+        }
+        if (attack_running) {
             ui.scan_error = ESP_ERR_INVALID_STATE;
             ui.scan_state = SCAN_FAILED;
             ui.dirty = true;
             return;
         }
+
+        /* Hand the multi-second scan to a worker task. */
+        ui.scan_state = SCAN_RUNNING;
+        ui.dirty = true;
+        if (!start_ui_job(UI_JOB_SCAN)) {
+            ui.scan_error = ESP_FAIL;
+            ui.scan_state = SCAN_FAILED;
+        }
+        return;
     }
 
-    ui.scan_error = wifictl_scan_nearby_aps();
-    ui.scan_state = ui.scan_error == ESP_OK ? SCAN_READY : SCAN_FAILED;
+    if (ui.scan_state != SCAN_RUNNING || ui_job != UI_JOB_SCAN || !ui_job_done) return;
+
+    ui_job = UI_JOB_NONE;
+    ui.scan_error = ui_job_result;
+    ui.scan_state = ui_job_result == ESP_OK ? SCAN_READY : SCAN_FAILED;
     ui.ap_index = 0;
     ui.dirty = true;
 }
@@ -641,19 +712,11 @@ static void handle_enter(void)
         }
         case SCREEN_CAPTURE_DELETE: {
             bool all = (ui.capture_delete_choice == 1);
-            bool ok;
-            if (all) {
-                unsigned n = 0;
-                ok = pcap_serializer_delete_all(&n);
-            } else {
-                ok = pcap_serializer_delete(capture_delete_target_name);
+            /* Delete on the worker task so a slow SPIFFS stays responsive. */
+            if (start_ui_job(all ? UI_JOB_DELETE_ALL : UI_JOB_DELETE_ONE)) {
+                ui.capture_index = 0;
+                ui.screen = SCREEN_CAPTURE;
             }
-            ESP_LOGI(UI_TAG, "%s -> %s", all ? "delete all" : capture_delete_target_name,
-                     ok ? "ok" : "failed");
-            capture_delete_target_name[0] = '\0';
-            ui.capture_index = 0;
-            ui.screen = SCREEN_CAPTURE;
-            capture_cache_refresh();
             break;
         }
         case SCREEN_STATUS:
@@ -802,6 +865,20 @@ static void ui_task(void *arg)
             ui.dirty = false;
         }
         run_pending_scan();
+
+        /* Complete a background job (the scan is handled by run_pending_scan). */
+        if (ui_job != UI_JOB_NONE && ui_job_done) {
+            ui_job_t finished = ui_job;
+            ui_job = UI_JOB_NONE;
+            if (finished == UI_JOB_DELETE_ONE || finished == UI_JOB_DELETE_ALL) {
+                ESP_LOGI(UI_TAG, "delete -> %s",
+                         ui_job_result == ESP_OK ? "ok" : "failed");
+                capture_delete_target_name[0] = '\0';
+                capture_cache_refresh();
+            }
+            ui.dirty = true;
+        }
+
         /* Only the attack status page needs periodic redraw; the capture list
            is static and re-listing it every tick would hammer SPIFFS. */
         if (ui.screen == SCREEN_ATTACK_STATUS) {

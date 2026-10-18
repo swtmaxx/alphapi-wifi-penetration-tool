@@ -11,9 +11,20 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "sdkconfig.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
+
+/* These tables are only touched by tasks, never by DMA, so they may live in
+   PSRAM when it is enabled (see README: "启用 PSRAM"). With the default build
+   (CONFIG_SPIRAM off) the attribute expands to nothing. */
+#if CONFIG_SPIRAM
+#include "esp_attr.h"
+#define LARGE_RAM_ATTR EXT_RAM_BSS_ATTR
+#else
+#define LARGE_RAM_ATTR
+#endif
 
 /* Keep the ring small: every line lives in internal DRAM, which is the scarce
    resource on this chip (the ESP-IDF 6.x image needs ~24 KB more of it than
@@ -21,7 +32,7 @@
 #define DEBUG_LOG_LINE_COUNT 16
 #define DEBUG_LOG_LINE_MAX   128
 
-static char log_lines[DEBUG_LOG_LINE_COUNT][DEBUG_LOG_LINE_MAX];
+static LARGE_RAM_ATTR char log_lines[DEBUG_LOG_LINE_COUNT][DEBUG_LOG_LINE_MAX];
 static size_t log_write_index;
 static size_t log_line_count;
 static portMUX_TYPE log_mux = portMUX_INITIALIZER_UNLOCKED;
