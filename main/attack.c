@@ -400,6 +400,13 @@ static void attack_request_handler(void *args, esp_event_base_t event_base, int3
         ESP_LOGW(TAG, "Attack already running");
         return;
     }
+    if (attack_request->type == ATTACK_TYPE_PASSIVE) {
+        /* Claiming RUNNING for a type that never runs would leave the device
+           stuck in RUNNING until the user resets it. */
+        status_unlock();
+        ESP_LOGW(TAG, "ATTACK_TYPE_PASSIVE is not implemented; ignoring the request");
+        return;
+    }
     /* Drop the previous result so a new run cannot append to it, and claim the
        state before touching active_ap_record: a second request must no longer be
        able to overwrite the record the running attack points at. */

@@ -38,6 +38,9 @@
 #define LINE_H           16
 #define FOOTER_Y         112
 #define AP_VISIBLE        6
+/* The capture page spends one row on the "N files" header, so one row fewer fits
+   above the footer. */
+#define CAPTURE_VISIBLE   ((FOOTER_Y - (CONTENT_Y + LINE_H)) / LINE_H)
 
 typedef enum {
     SCREEN_MAIN_MENU,
@@ -461,8 +464,8 @@ static void draw_capture(void)
 
     int16_t y = CONTENT_Y + LINE_H;
     uint8_t shown = 0;
-    uint8_t scroll = ui.capture_index >= AP_VISIBLE ? ui.capture_index - AP_VISIBLE + 1 : 0;
-    for (unsigned i = scroll; i < count && shown < AP_VISIBLE; i++, shown++) {
+    uint8_t scroll = ui.capture_index >= CAPTURE_VISIBLE ? ui.capture_index - CAPTURE_VISIBLE + 1 : 0;
+    for (unsigned i = scroll; i < count && shown < CAPTURE_VISIBLE; i++, shown++) {
         uint16_t fg = i == ui.capture_index ? COLOR_BLACK : COLOR_WHITE;
         uint16_t bg = i == ui.capture_index ? COLOR_YELLOW : COLOR_BLACK;
         display_fill_rect(1, y, DISPLAY_WIDTH - 2, LINE_H, bg);

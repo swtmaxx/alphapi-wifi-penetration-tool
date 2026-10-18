@@ -19,6 +19,7 @@
 #include "esp_timer.h"
 #include "esp_wifi_types.h"
 
+#include "sdkconfig.h"
 #include "wifi_controller.h"
 #include "wsl_bypasser.h"
 
@@ -104,6 +105,13 @@ void attack_method_broadcast_stop(){
         }
     }
     esp_timer_delete(handle);
+
+    /* The broadcast path moved the management AP onto the target channel; put it
+       back so the device ends in a known state (the screen shows the configured
+       channel). A rogue AP owns the channel itself, so leave it alone. */
+    if (!rogue_ap_active) {
+        wifictl_move_mgmt_ap_to_channel(CONFIG_MGMT_AP_CHANNEL);
+    }
 }
 
 /**

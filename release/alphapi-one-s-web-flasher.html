@@ -622,6 +622,11 @@ class A extends Error{}
       setBusy(state.busy);
     }
 
+    /* Partition layout from partitions.csv: storage starts right after the 3 MB
+       factory partition. */
+    const STORAGE_START = 0x310000;
+    const STORAGE_END = 0x710000;
+
     function collectRows(requireFiles = true) {
       const selected = state.rows.filter(row => row.file);
       if (requireFiles && !selected.length) throw new Error("请至少选择一个固件文件");
@@ -636,6 +641,11 @@ class A extends Error{}
         if (item.address % 4 !== 0) throw new Error(`${item.row.file.name} 的地址必须按 4 字节对齐`);
         if (item.size === 0) throw new Error(`${item.row.file.name} 是空文件`);
         if (item.end > FLASH_BYTES) throw new Error(`${item.row.file.name} 超出 8 MB Flash（结束于 ${hex(item.end)}）`);
+        /* The storage partition holds the saved captures and PMKID results; the
+           page promises a three-segment flash never touches it. */
+        if (item.address < STORAGE_END && item.end > STORAGE_START) {
+          throw new Error(`${item.row.file.name} 会覆盖 ${hex(STORAGE_START)}–${hex(STORAGE_END)} 的 storage 抓包分区`);
+        }
       }
       parsed.sort((a, b) => a.address - b.address);
       for (let i = 1; i < parsed.length; i++) {

@@ -49,6 +49,25 @@ static void set_security_headers(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 }
 
+/**
+ * @brief Reject cross-site requests to endpoints with side effects.
+ *
+ * The management AP has no session token, so any page the operator's browser
+ * happens to load could POST here and delete every capture or start an attack.
+ * Browsers attach Origin (or Referer) to cross-origin requests, so require it to
+ * point at this device. Requests without either header (curl, scripts) are
+ * allowed on purpose.
+ */
+static bool request_is_same_origin(httpd_req_t *req)
+{
+    char origin[96];
+    if (httpd_req_get_hdr_value_str(req, "Origin", origin, sizeof(origin)) == ESP_OK ||
+        httpd_req_get_hdr_value_str(req, "Referer", origin, sizeof(origin)) == ESP_OK) {
+        return strstr(origin, "192.168.4.1") != NULL;
+    }
+    return true;
+}
+
 static const char *storage_state_name(pcap_storage_state_t state)
 {
     switch (state) {
@@ -118,6 +137,7 @@ static httpd_uri_t uri_root_get = {
  * @{
  */
 static esp_err_t uri_reset_head_handler(httpd_req_t *req) {
+    if (!request_is_same_origin(req)) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "跨站请求被拒绝");
     set_security_headers(req);
     ESP_ERROR_CHECK(esp_event_post(WEBSERVER_EVENTS, WEBSERVER_EVENT_ATTACK_RESET, NULL, 0, portMAX_DELAY));
     return httpd_resp_send(req, NULL, 0);
@@ -199,6 +219,7 @@ static httpd_uri_t uri_ap_list_get = {
  * @{
  */
 static esp_err_t uri_run_attack_post_handler(httpd_req_t *req) {
+    if (!request_is_same_origin(req)) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "跨站请求被拒绝");
     attack_request_t attack_request;
     /* The body is exactly one attack_request_t. A short body used to leave
        uninitialised stack bytes in the request, so keep reading until the whole
@@ -492,6 +513,7 @@ static httpd_uri_t uri_capture_file_get = {
  * @{
  */
 static esp_err_t uri_pcap_delete_post_handler(httpd_req_t *req) {
+    if (!request_is_same_origin(req)) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "跨站请求被拒绝");
     char query[96];
     char name[PCAP_FILENAME_MAX] = {0};
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
@@ -523,6 +545,7 @@ static httpd_uri_t uri_pcap_delete_post = {
  * @{
  */
 static esp_err_t uri_pcap_delete_all_post_handler(httpd_req_t *req) {
+    if (!request_is_same_origin(req)) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "跨站请求被拒绝");
     unsigned removed = 0;
     bool ok = pcap_serializer_delete_all(&removed);
 
@@ -551,6 +574,7 @@ static httpd_uri_t uri_pcap_delete_all_post = {
  * @{
  */
 static esp_err_t uri_count_clients_post_handler(httpd_req_t *req) {
+    if (!request_is_same_origin(req)) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "跨站请求被拒绝");
     if (attack_is_running()) {
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                                    "攻击进行中，客户端探测会打断抓包，请先停止攻击");

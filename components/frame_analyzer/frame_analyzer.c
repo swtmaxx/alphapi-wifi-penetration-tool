@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
 
 #define LOG_LOCAL_LEVEL ESP_LOG_DEBUG
 #include "esp_log.h"
@@ -87,8 +88,17 @@ static void data_frame_handler(void *args, esp_event_base_t event_base, int32_t 
         if((pmkid_items = parse_pmkid(eapol_key_packet, eapol_len)) == NULL){
             return;
         }
-        esp_event_post_to(loop, FRAME_ANALYZER_EVENTS, DATA_FRAME_EVENT_PMKID,
-                          &pmkid_items, sizeof(pmkid_item_t *), 0);
+        esp_err_t err = esp_event_post_to(loop, FRAME_ANALYZER_EVENTS,
+                                          DATA_FRAME_EVENT_PMKID,
+                                          &pmkid_items, sizeof(pmkid_item_t *), 0);
+        if (err != ESP_OK) {
+            /* Nobody will receive this pointer, so the list would leak. */
+            while (pmkid_items != NULL) {
+                pmkid_item_t *next = pmkid_items->next;
+                free(pmkid_items);
+                pmkid_items = next;
+            }
+        }
         return;
     }
 }
