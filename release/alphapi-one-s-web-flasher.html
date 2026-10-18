@@ -357,7 +357,8 @@
           <div class="panel-head"><h2 id="safetyTitle">写入策略</h2></div>
           <div class="checks">
             <label class="check-line"><input type="checkbox" checked disabled><span>禁止整片擦除</span></label>
-            <label class="check-line"><input id="verifyCheck" type="checkbox" checked><span>逐段 MD5 校验</span></label>
+            <label class="check-line"><input id="compressCheck" type="checkbox" checked><span>压缩传输（默认开，更省时间；报错时可取消）</span></label>
+            <label class="check-line"><input id="verifyCheck" type="checkbox"><span>逐段 MD5 校验（回读整段，约慢一倍）</span></label>
             <label class="check-line"><input id="softRunCheck" type="checkbox"><span>完成后尝试软跳转运行</span></label>
           </div>
         </section>
@@ -428,7 +429,7 @@ class A extends Error{}
     const el = Object.fromEntries([
       "statusDot", "deviceStatus", "connectBtn", "disconnectBtn", "firmwareList",
       "mergedBtn", "bulkBtn", "presetBtn", "addBtn", "fileCount", "totalSize", "highestAddress",
-      "flashMode", "flashFreq", "flashSize", "verifyCheck", "softRunCheck", "flashBtn",
+      "flashMode", "flashFreq", "flashSize", "verifyCheck", "softRunCheck", "compressCheck", "flashBtn",
       "progress", "progressLabel", "progressText", "message", "log", "copyLogBtn",
       "clearLogBtn", "mergedInput", "bulkInput"
     ].map(id => [id, document.getElementById(id)]));
@@ -853,14 +854,21 @@ class A extends Error{}
           fileArray.push({ data: new Uint8Array(await item.row.file.arrayBuffer()), address: item.address });
         }
 
-        appendLog(`即将写入 ${items.length} 段，共 ${formatBytes(totalRaw)}；不执行整片擦除`);
+        appendLog(`即将写入 ${items.length} 段，共 ${formatBytes(totalRaw)}；${el.compressCheck.checked ? "压缩传输已开启" : "压缩传输已关闭（兼容模式）"}，不执行整片擦除`);
+        appendLog(el.verifyCheck.checked
+          ? "写入后会逐段回读并校验 MD5（约多花一倍时间）"
+          : "已跳过 MD5 回读校验；需要保险时再勾“逐段 MD5 校验”");
         setProgress(0, "擦除并写入");
         originalFlashBegin = state.loader.flashBegin.bind(state.loader);
-        state.loader.flashBegin = async (size, address) => {
+        state.loader.flashBegin = async (...args) => {
+          const [size, address] = args;
           const eraseSize = state.loader.chip.getEraseSize(address, size);
           const blocks = Math.ceil(size / state.loader.FLASH_WRITE_SIZE);
-          appendLog(`FLASH_BEGIN：地址 ${hex(address)}，数据 ${formatBytes(size)}，擦除 ${formatBytes(eraseSize)}，${blocks} 个块`);
-          return originalFlashBegin(size, address);
+          appendLog(`FLASH_BEGIN：地址 ${hex(address)}，数据 ${formatBytes(size)}，擦除 ${formatBytes(eraseSize)}，最多 ${blocks} 个块`);
+          /* Forward every argument: esptool-js may pass a retry count as a third
+             parameter, and dropping it turned a retryable block into a hard
+             failure. */
+          return originalFlashBegin(...args);
         };
         if (typeof state.loader.flashMd5sum === "function") {
           // ESP32 ROM returns the MD5 as 32 ASCII characters. esptool-js
@@ -883,7 +891,11 @@ class A extends Error{}
           flashFreq: el.flashFreq.value,
           flashSize: el.flashSize.value,
           eraseAll: false,
-          compress: false,
+          /* Deflate every block: the stub unpacks it on the device side, which
+             roughly halves the transfer time over the 12 Mbit/s USB CDC of the
+             ESP32-S2. Checking MD5 afterwards reads the whole image back, so it
+             is opt-in rather than on by default. */
+          compress: el.compressCheck.checked,
           calculateMD5Hash: el.verifyCheck.checked ? md5 : undefined,
           reportProgress(fileIndex, written, total) {
             const currentRawSize = items[fileIndex].size;
