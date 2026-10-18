@@ -345,7 +345,7 @@ static void draw_attack_status(void)
 {
     attack_status_t status;
     char buf[32];
-    if (!attack_get_status_snapshot(&status)) return;
+    if (!attack_get_status_meta(&status)) return;
 
     snprintf(buf, sizeof(buf), "状态 %s", attack_state_name(status.state));
     display_draw_text_utf8(3, CONTENT_Y, buf,
@@ -357,9 +357,16 @@ static void draw_attack_status(void)
     display_draw_text_utf8(3, CONTENT_Y + LINE_H, buf, COLOR_WHITE, COLOR_BLACK);
 
     if (status.state == STORAGE_ERROR) {
-        char message[48];
-        snprintf(message, sizeof(message), "%s",
-                 status.content != NULL ? status.content : "抓包文件保存失败");
+        /* Only this page needs the text, so take the (potentially large)
+           snapshot just here instead of on every redraw. */
+        char message[48] = "抓包文件保存失败";
+        attack_status_t full;
+        if (attack_get_status_snapshot(&full)) {
+            if (full.content != NULL && full.content_size > 0) {
+                snprintf(message, sizeof(message), "%s", full.content);
+            }
+            attack_free_status_snapshot(&full);
+        }
         display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, message,
                                COLOR_RED, COLOR_BLACK);
     } else if (status.type == ATTACK_TYPE_DOS) {
@@ -399,7 +406,6 @@ static void draw_attack_status(void)
         display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, buf, COLOR_CYAN, COLOR_BLACK);
     }
 
-    attack_free_status_snapshot(&status);
     draw_footer("返回=停止");
 }
 

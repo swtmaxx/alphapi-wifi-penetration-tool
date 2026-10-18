@@ -76,6 +76,19 @@ bool attack_get_status_snapshot(attack_status_t *snapshot)
     return true;
 }
 
+bool attack_get_status_meta(attack_status_t *snapshot)
+{
+    if (snapshot == NULL) return false;
+    memset(snapshot, 0, sizeof(*snapshot));
+    status_lock();
+    snapshot->state = attack_status.state;
+    snapshot->type = attack_status.type;
+    snapshot->content_size = attack_status.content_size;
+    snapshot->content = NULL;
+    status_unlock();
+    return true;
+}
+
 void attack_free_status_snapshot(attack_status_t *snapshot)
 {
     if (snapshot == NULL) return;
@@ -378,6 +391,34 @@ static void attack_timeout(void* arg){
 }
 
 /**
+ * @brief Runs one attack's start sequence on a dedicated task.
+ *
+ * The event-loop task has a 2304-byte stack, while starting a capture walks
+ * through esp_vfs_spiffs_register()/fopen()/snprintf() and can create the sniffer
+ * event loop. Running that on the shared event task risked a stack overflow that
+ * only showed up on the first capture after boot.
+ */
+static void attack_start_task(void *arg)
+{
+    attack_config_t config = *(attack_config_t *) arg;
+    free(arg);
+
+    switch (config.type) {
+        case ATTACK_TYPE_PMKID:     attack_pmkid_start(&config); break;
+        case ATTACK_TYPE_HANDSHAKE: attack_handshake_start(&config); break;
+        case ATTACK_TYPE_DOS:       attack_dos_start(&config); break;
+        default:
+            ESP_LOGE(TAG, "Unknown attack type!");
+            status_lock();
+            attack_status.state = READY;
+            attack_status.type = -1;
+            status_unlock();
+            break;
+    }
+    vTaskDelete(NULL);
+}
+
+/**
  * @brief Callback for WEBSERVER_EVENT_ATTACK_REQUEST event.
  * 
  * This function handles WEBSERVER_EVENT_ATTACK_REQUEST event from event loop.
@@ -447,22 +488,24 @@ static void attack_request_handler(void *args, esp_event_base_t event_base, int3
             ESP_LOGW(TAG, "Failed to arm the timeout: %s", esp_err_to_name(err));
         }
     }
-    // start attack based on it's type
-    switch(attack_config.type) {
-        case ATTACK_TYPE_PMKID:
-            attack_pmkid_start(&attack_config);
-            break;
-        case ATTACK_TYPE_HANDSHAKE:
-            attack_handshake_start(&attack_config);
-            break;
-        case ATTACK_TYPE_PASSIVE:
-            ESP_LOGW(TAG, "ATTACK_TYPE_PASSIVE not implemented yet!");
-            break;
-        case ATTACK_TYPE_DOS:
-            attack_dos_start(&attack_config);
-            break;
-        default:
-            ESP_LOGE(TAG, "Unknown attack type!");
+    /* Hand the start sequence to a task with room for it (see attack_start_task). */
+    attack_config_t *task_config = malloc(sizeof(*task_config));
+    if (task_config == NULL) {
+        ESP_LOGE(TAG, "No memory to start the attack");
+        status_lock();
+        attack_status.state = READY;
+        attack_status.type = -1;
+        status_unlock();
+        return;
+    }
+    *task_config = attack_config;
+    if (xTaskCreate(attack_start_task, "atk_start", 6144, task_config, 5, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create the attack task");
+        free(task_config);
+        status_lock();
+        attack_status.state = READY;
+        attack_status.type = -1;
+        status_unlock();
     }
 }
 

@@ -76,6 +76,15 @@ typedef struct {
 bool attack_get_status_snapshot(attack_status_t *snapshot);
 
 /**
+ * @brief Copy only the status scalars, never the result content.
+ *
+ * The on-device status page redraws every 150 ms and only needs state/type/size;
+ * taking a full snapshot there meant a malloc+memcpy+free of up to 64 KB per
+ * redraw. Use attack_get_status_snapshot() when the content is actually needed.
+ */
+bool attack_get_status_meta(attack_status_t *snapshot);
+
+/**
  * @brief Release content allocated by attack_get_status_snapshot().
  */
 void attack_free_status_snapshot(attack_status_t *snapshot);
