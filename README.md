@@ -55,6 +55,15 @@
 在本 README 所在目录执行：
 
 ```shell
+# 首次克隆需要带上子模块（components/esp_littlefs 及其内部的 littlefs）
+git clone --recursive <本仓库地址>
+# 如果已经克隆过，补一次即可
+git submodule update --init --recursive
+```
+
+然后构建：
+
+```shell
 pio run -e alphapi_esp32s2
 ```
 
@@ -214,6 +223,7 @@ components/hccapx_serializer/ HCCAPX 结果序列化
 components/webserver/         HTTP API 和中文网页
 components/display/            AlphaPi ST7789 显示驱动和字库
 components/wsl_bypasser/       原始 802.11 帧发送支持
+components/esp_littlefs/      LittleFS 组件（git submodule，固定 v1.23.0）
 doc/                           理论说明、图示和图片
 release/                       网页刷写器、发布说明和第三方许可
 firmware/、backups/            工作区本地恢复资料，不属于本公开仓库

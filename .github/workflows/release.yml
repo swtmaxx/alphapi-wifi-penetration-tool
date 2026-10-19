@@ -28,6 +28,8 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
+          # components/esp_littlefs is a submodule that itself vendors littlefs.
+          submodules: recursive
 
       - name: Validate release tag
         shell: bash
