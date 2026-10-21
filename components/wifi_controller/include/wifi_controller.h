@@ -15,6 +15,7 @@
 #include "../ap_scanner.h"
 #include "../sniffer.h"
 #include "../client_counter.h"
+#include "../ap_security.h"
 
 #include "esp_wifi_types.h"
 

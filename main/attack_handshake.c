@@ -18,6 +18,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_event.h"
+#include "esp_timer.h"
 #include "esp_wifi_types.h"
 
 #include "attack.h"
@@ -34,6 +35,43 @@ static bool eapol_handler_registered = false;
 static bool beacon_handler_registered = false;
 static bool analyzer_started = false;
 static bool beacon_saved = false;
+/* Fires a few seconds after the first usable handshake so the capture can pick
+   up M3/M4 as well; M1+M2 alone is crackable but a fuller handshake is more
+   portable across cracking tools. */
+static esp_timer_handle_t handshake_settle_timer = NULL;
+
+static void handshake_settle_cb(void *arg)
+{
+    (void) arg;
+    ESP_LOGI(TAG, "Handshake settled; stopping capture");
+    attack_signal_success();
+}
+
+static void handshake_settle_arm(void)
+{
+    if (handshake_settle_timer != NULL) return;
+    const esp_timer_create_args_t args = { .callback = &handshake_settle_cb };
+    if (esp_timer_create(&args, &handshake_settle_timer) != ESP_OK) {
+        /* Without a timer the capture would never stop by itself. */
+        attack_signal_success();
+        return;
+    }
+    if (esp_timer_start_once(handshake_settle_timer, 3000ULL * 1000ULL) != ESP_OK) {
+        esp_timer_delete(handshake_settle_timer);
+        handshake_settle_timer = NULL;
+        attack_signal_success();
+    }
+}
+
+static void handshake_settle_cancel(void)
+{
+    if (handshake_settle_timer == NULL) return;
+    if (esp_timer_is_active(handshake_settle_timer)) {
+        esp_timer_stop(handshake_settle_timer);
+    }
+    esp_timer_delete(handshake_settle_timer);
+    handshake_settle_timer = NULL;
+}
 
 static const char *pcap_error_message(void)
 {
@@ -69,12 +107,11 @@ static void eapolkey_frame_handler(void *args, esp_event_base_t event_base, int3
     hccapx_serializer_add_frame((data_frame_t *) frame->payload,
                                 frame->rx_ctrl.sig_len);
 
-    /* message_pair leaves 255 once a usable handshake is assembled, so the
-       capture can stop by itself instead of waiting out the timeout. */
-    hccapx_t *hccapx = hccapx_serializer_get();
-    if (hccapx != NULL && hccapx->message_pair != 255) {
-        ESP_LOGI(TAG, "Usable handshake captured (pair=%u)", hccapx->message_pair);
-        attack_signal_success();
+    /* message_pair leaves 255 once a usable handshake is assembled. Keep
+       capturing for a few more seconds instead of stopping immediately: M3/M4
+       are often right behind M2 and make the result usable by more tools. */
+    if (hccapx_serializer_is_usable()) {
+        handshake_settle_arm();
     }
 }
 
@@ -102,6 +139,15 @@ static void beacon_frame_handler(void *args, esp_event_base_t event_base,
     }
 
     beacon_saved = true;
+    /* Parse the RSN element while the frame is still in hand: this is where the
+       PMF state comes from, and it explains a deauth that does nothing. */
+    ap_security_t security = { .pmf = AP_PMF_UNKNOWN };
+    if (wifictl_parse_ap_security(payload, frame->rx_ctrl.sig_len, &security)) {
+        wifictl_set_last_ap_security(&security);
+        ESP_LOGI(TAG, "Target PMF=%s%s%s", wifictl_pmf_name(security.pmf),
+                 security.bip_cipher ? " (BIP enabled)" : "",
+                 security.wps ? ", WPS enabled" : "");
+    }
     /* Keep the EAPOL path light after the requested first Beacon is stored. */
     wifictl_sniffer_filter_frame_types(true, false, false);
     ESP_LOGI(TAG, "Saved target Beacon in handshake PCAP");
@@ -115,6 +161,7 @@ void attack_handshake_start(attack_config_t *attack_config){
     beacon_handler_registered = false;
     analyzer_started = false;
     beacon_saved = false;
+    handshake_settle_cancel();
     if (!pcap_serializer_init(ap_record->ssid, strlen((char *) ap_record->ssid))) {
         ESP_LOGE(TAG, "PCAP capture could not be initialized");
         attack_signal_storage_error(pcap_error_message());
@@ -169,6 +216,7 @@ void attack_handshake_start(attack_config_t *attack_config){
 void attack_handshake_stop(){
     /* Stop the radio work first: the sniffer must be off before the AP
        interface is reconfigured back into the management AP. */
+    handshake_settle_cancel();
     wifictl_sniffer_stop();
     if (analyzer_started) frame_analyzer_capture_stop();
     esp_event_loop_handle_t loop = wifictl_sniffer_event_loop();

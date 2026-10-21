@@ -11,6 +11,9 @@
 #ifndef WSL_BYPASSER_H
 #define WSL_BYPASSER_H
 
+#include <stdbool.h>
+#include <stdint.h>
+
 #include "esp_err.h"
 #include "esp_wifi_types.h"
 
@@ -40,5 +43,29 @@ void wsl_bypasser_get_tx_stats(uint32_t *ok, uint32_t *fail, esp_err_t *last_err
  * @param ap_record AP record with valid AP information 
  */
 void wsl_bypasser_send_deauth_frame(const wifi_ap_record_t *ap_record);
+
+/**
+ * @brief Sends a deauth/disassoc frame addressed to one station.
+ *
+ * @param bssid    target AP (spoofed source and BSSID)
+ * @param sta      destination station MAC, NULL for broadcast
+ * @param reason   reason code, 7 = class 3 frame from nonassociated STA
+ * @param disassoc true sends disassociation (0xA0) instead of deauth (0xC0)
+ */
+void wsl_bypasser_send_deauth_to(const uint8_t *bssid, const uint8_t *sta,
+                                 uint8_t reason, bool disassoc);
+
+/**
+ * @brief Sends a broadcast deauth/disassoc with an explicit reason code.
+ */
+void wsl_bypasser_send_deauth_broadcast(const uint8_t *bssid, uint8_t reason,
+                                        bool disassoc);
+
+/**
+ * @brief Sends a Null Data frame with MoreData set to wake sleeping stations.
+ *
+ * Without this the deauth path has no station MAC to aim at on a quiet AP.
+ */
+void wsl_bypasser_send_null_wake(const uint8_t *bssid);
 
 #endif

