@@ -33,6 +33,7 @@ static const char *TAG = "signal_monitor";
 static signal_snapshot_t snapshot;
 static SemaphoreHandle_t snapshot_mutex = NULL;
 static volatile bool list_running = false;
+static TaskHandle_t list_task_handle = NULL;
 static volatile bool target_locked = false;
 static uint8_t target_bssid[6];
 static bool handler_registered = false;
@@ -125,6 +126,16 @@ bool signal_monitor_lock_target(const uint8_t *bssid, uint8_t channel, const cha
     if (!signal_monitor_init()) return false;
 
     signal_monitor_stop_list();
+
+    /* The list task may be inside wifictl_scan_nearby_aps() right now; taking
+       the radio while it scans would make the first readings useless. */
+    for (unsigned waited = 0; waited < 3000; waited += 50) {
+        lock_state();
+        bool scanning = snapshot.scanning;
+        unlock_state();
+        if (!scanning) break;
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
 
     memcpy(target_bssid, bssid, 6);
 
@@ -254,18 +265,24 @@ static void list_task(void *arg)
     lock_state();
     snapshot.scanning = false;
     unlock_state();
+    list_task_handle = NULL;
     vTaskDelete(NULL);
 }
 
 void signal_monitor_start_list(void)
 {
-    if (list_running) return;
+    /* A previous task may still be unwinding (it can sit in a scan for up to a
+       couple of seconds); starting another one would leave two scanners racing
+       for the radio. */
+    if (list_running || list_task_handle != NULL) return;
     if (!signal_monitor_init()) return;
     if (target_locked) signal_monitor_unlock_target();
 
     list_running = true;
-    if (xTaskCreate(list_task, "sig_list", LIST_TASK_STACK, NULL, LIST_TASK_PRIO, NULL) != pdPASS) {
+    if (xTaskCreate(list_task, "sig_list", LIST_TASK_STACK, NULL, LIST_TASK_PRIO,
+                    &list_task_handle) != pdPASS) {
         list_running = false;
+        list_task_handle = NULL;
         ESP_LOGE(TAG, "Failed to start the scan task");
     }
 }

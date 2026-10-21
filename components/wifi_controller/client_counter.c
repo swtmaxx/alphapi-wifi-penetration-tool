@@ -26,16 +26,6 @@
 #include "ap_scanner.h"
 #include "sniffer.h"
 
-/* These tables are only touched by tasks, never by DMA, so they may live in
-   PSRAM when it is enabled (see README: "启用 PSRAM"). With the default build
-   (CONFIG_SPIRAM off) the attribute expands to nothing. */
-#if CONFIG_SPIRAM
-#include "esp_attr.h"
-#define LARGE_RAM_ATTR EXT_RAM_BSS_ATTR
-#else
-#define LARGE_RAM_ATTR
-#endif
-
 static const char *TAG = "client_counter";
 
 /* Internal DRAM is the scarce resource here (the ESP-IDF 6.x image needs
@@ -68,6 +58,7 @@ static unsigned tracked_bssid_count = 0;
 static SemaphoreHandle_t counter_mutex = NULL;
 static volatile bool counting_active = false;
 static bool handler_registered = false;
+static bool alloc_warned = false;
 
 static bool ensure_mutex(void)
 {
@@ -81,7 +72,12 @@ static bool ensure_mutex(void)
         tracked_bssids = calloc(CLIENT_COUNT_MAX_AP, sizeof(*tracked_bssids));
     }
     if (entries == NULL || tracked_bssids == NULL) {
-        ESP_LOGE(TAG, "Failed to allocate the client tables");
+        /* Log once: this runs from the sniffer callback too, and retrying a
+           failing allocation on every frame would flood the log ring. */
+        if (!alloc_warned) {
+            ESP_LOGE(TAG, "Failed to allocate the client tables");
+            alloc_warned = true;
+        }
         return false;
     }
     return true;

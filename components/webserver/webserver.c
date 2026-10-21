@@ -348,7 +348,7 @@ static httpd_uri_t uri_capture_pcap_get = {
 static esp_err_t uri_capture_hccapx_get_handler(httpd_req_t *req){
     ESP_LOGD(TAG, "Providing HCCAPX file...");
     /* Take a snapshot: the sniffer task keeps rewriting the shared buffer, and
-       hccapx_serializer_get() returns NULL until a usable handshake exists. */
+       the serializer reports "not usable" until a handshake exists. */
     hccapx_t snapshot;
     if (!hccapx_serializer_snapshot(&snapshot)) {
         return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "尚未抓到可用握手");

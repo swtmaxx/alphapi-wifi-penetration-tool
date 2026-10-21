@@ -140,17 +140,6 @@ void hccapx_serializer_init(const uint8_t *ssid, unsigned size){
     hccapx_unlock();
 }
 
-/* Returns a pointer into the shared buffer. Only safe when no capture is
-   running; use hccapx_serializer_snapshot() or hccapx_serializer_is_usable()
-   from other tasks. */
-hccapx_t *hccapx_serializer_get(){
-    if(hccapx.message_pair == 255){
-        return NULL;
-    }
-    
-    return &hccapx;
-}
-
 bool hccapx_serializer_snapshot(hccapx_t *out)
 {
     if (out == NULL || !hccapx_lock()) return false;

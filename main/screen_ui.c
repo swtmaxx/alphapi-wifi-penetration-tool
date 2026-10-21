@@ -477,6 +477,11 @@ static unsigned capture_total_count = 0;
 /* Name captured when the confirmation page opens, so a list refresh cannot
    change what the user is about to delete. */
 static char capture_delete_target_name[PCAP_FILENAME_MAX] = "";
+/* Cached inspection of the file shown on the detail page: re-reading up to
+   256 KB from LittleFS on every redraw made the page feel stuck. */
+static pcap_inspect_t detail_info;
+static char detail_name[PCAP_FILENAME_MAX] = "";
+static bool detail_valid = false;
 
 /* Long jobs run on a worker task so the UI keeps sampling keys and redrawing.
    Running them inline froze the screen for the whole scan (seconds) and dropped
@@ -672,7 +677,7 @@ static void draw_signal_list(void)
 
     int16_t y = CONTENT_Y;
     uint8_t shown = 0;
-    uint8_t scroll = ui.signal_index >= AP_VISIBLE ? (uint8_t) (ui.signal_index - AP_VISIBLE + 1) : 0;
+    unsigned scroll = ui.signal_index >= AP_VISIBLE ? (unsigned) (ui.signal_index - AP_VISIBLE + 1) : 0;
 
     for (unsigned i = scroll; i < snap.count && shown < AP_VISIBLE; i++, shown++) {
         const signal_ap_t *ap = &snap.aps[i];
@@ -751,32 +756,39 @@ static void draw_signal_target(void)
 static void draw_capture_detail(void)
 {
     char buf[48];
-    pcap_inspect_t info;
-    bool ok = pcap_serializer_inspect(capture_delete_target_name, &info);
 
     display_draw_text_utf8(3, CONTENT_Y, capture_delete_target_name, COLOR_CYAN, COLOR_BLACK);
-    if (!ok) {
+
+    /* Inspect once per page visit, not once per redraw. */
+    if (!detail_valid || strcmp(detail_name, capture_delete_target_name) != 0) {
+        detail_valid = pcap_serializer_inspect(capture_delete_target_name, &detail_info);
+        strncpy(detail_name, capture_delete_target_name, sizeof(detail_name) - 1);
+        detail_name[sizeof(detail_name) - 1] = '\0';
+    }
+    if (!detail_valid) {
         display_draw_text_utf8(3, CONTENT_Y + LINE_H, "无法读取文件", COLOR_RED, COLOR_BLACK);
         draw_footer("返回=文件列表");
         return;
     }
 
-    snprintf(buf, sizeof(buf), "帧 %u  EAPOL %u", info.frames, info.eapol_frames);
+    const pcap_inspect_t *info = &detail_info;
+
+    snprintf(buf, sizeof(buf), "帧 %u  EAPOL %u", info->frames, info->eapol_frames);
     display_draw_text_utf8(3, CONTENT_Y + LINE_H, buf, COLOR_WHITE, COLOR_BLACK);
 
-    snprintf(buf, sizeof(buf), "%u B%s", info.bytes, info.truncated ? " (部分)" : "");
+    snprintf(buf, sizeof(buf), "%u B%s", info->bytes, info->truncated ? " (部分)" : "");
     display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, buf, COLOR_GRAY, COLOR_BLACK);
 
-    if (info.has_beacon && info.ssid[0]) {
-        snprintf(buf, sizeof(buf), "SSID %s", info.ssid);
+    if (info->has_beacon && info->ssid[0]) {
+        snprintf(buf, sizeof(buf), "SSID %s", info->ssid);
     } else {
         snprintf(buf, sizeof(buf), "SSID 未知");
     }
     display_draw_text_utf8(3, CONTENT_Y + 3 * LINE_H, buf, COLOR_YELLOW, COLOR_BLACK);
 
     display_draw_text_utf8(3, CONTENT_Y + 4 * LINE_H,
-                           info.eapol_frames >= 2 ? "含握手，可尝试破解" : "无完整握手",
-                           info.eapol_frames >= 2 ? COLOR_GREEN : COLOR_GRAY, COLOR_BLACK);
+                           info->eapol_frames >= 2 ? "含握手，可尝试破解" : "无完整握手",
+                           info->eapol_frames >= 2 ? COLOR_GREEN : COLOR_GRAY, COLOR_BLACK);
     draw_footer("确定=删除 返回=列表");
 }
 
@@ -896,6 +908,7 @@ static void handle_enter(void)
                     sizeof(capture_delete_target_name) - 1);
             capture_delete_target_name[sizeof(capture_delete_target_name) - 1] = '\0';
             ui.capture_delete_choice = 0;
+            detail_valid = false;
             ui.screen = SCREEN_CAPTURE_DETAIL;
             break;
         }

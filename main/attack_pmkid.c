@@ -188,7 +188,7 @@ typedef struct {
     batch_state_t state;
 } pmkid_batch_entry_t;
 
-static pmkid_batch_entry_t batch_entries[PMKID_BATCH_MAX];
+static pmkid_batch_entry_t *batch_entries = NULL;
 static volatile unsigned batch_total = 0;
 static volatile unsigned batch_done = 0;
 static volatile unsigned batch_hits = 0;
@@ -196,6 +196,16 @@ static volatile unsigned batch_current = 0;
 static volatile bool batch_active = false;
 static volatile bool batch_cancel = false;
 static volatile bool batch_hit_seen = false;
+
+/* A timeout or a user reset may have moved the state already; do not overwrite
+   TIMEOUT/READY with FINISHED. */
+static void batch_finish_status(void)
+{
+    attack_status_t status;
+    if (attack_get_status_meta(&status) && status.state == RUNNING) {
+        attack_update_status(FINISHED);
+    }
+}
 
 void attack_pmkid_batch_progress(unsigned *done, unsigned *total, unsigned *hits)
 {
@@ -256,6 +266,13 @@ static void pmkid_batch_handler(void *args, esp_event_base_t base, int32_t id, v
     pmkid_item_t *head = *(pmkid_item_t **) event_data;
     if (head == NULL) return;
 
+    /* A retransmitted M1 (or a second client) can deliver more PMKIDs for the
+       same AP; keep one result file per AP. */
+    if (batch_hit_seen || batch_entries == NULL) {
+        free_pmkid_list(head);
+        return;
+    }
+
     unsigned idx = batch_current;
     if (idx < batch_total) {
         pmkid_batch_entry_t *entry = &batch_entries[idx];
@@ -296,10 +313,21 @@ static void pmkid_batch_task(void *arg)
     batch_hits = 0;
     batch_cancel = false;
 
+    batch_entries = calloc(PMKID_BATCH_MAX, sizeof(*batch_entries));
+    if (batch_entries == NULL) {
+        ESP_LOGE(TAG, "No memory for the PMKID batch table");
+        batch_finish_status();
+        batch_active = false;
+        vTaskDelete(NULL);
+        return;
+    }
+
     wifictl_ap_records_t records;
     if (!wifictl_copy_ap_records(&records)) {
         ESP_LOGE(TAG, "No scan results for the batch sweep");
-        attack_update_status(FINISHED);
+        free(batch_entries);
+        batch_entries = NULL;
+        batch_finish_status();
         batch_active = false;
         vTaskDelete(NULL);
         return;
@@ -332,7 +360,9 @@ static void pmkid_batch_task(void *arg)
 
     if (batch_total == 0) {
         ESP_LOGW(TAG, "No PMKID candidates in the scan result");
-        attack_update_status(FINISHED);
+        free(batch_entries);
+        batch_entries = NULL;
+        batch_finish_status();
         batch_active = false;
         vTaskDelete(NULL);
         return;
@@ -346,6 +376,8 @@ static void pmkid_batch_task(void *arg)
                                         DATA_FRAME_EVENT_PMKID,
                                         &pmkid_batch_handler, NULL) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register the batch PMKID handler");
+        free(batch_entries);
+        batch_entries = NULL;
         attack_signal_storage_error("PMKID 处理器注册失败");
         batch_active = false;
         vTaskDelete(NULL);
@@ -410,7 +442,9 @@ static void pmkid_batch_task(void *arg)
     wifictl_mgmt_ap_start();
 
     ESP_LOGI(TAG, "Batch PMKID finished: %u/%u hit", batch_hits, batch_total);
-    attack_update_status(FINISHED);
+    free(batch_entries);
+    batch_entries = NULL;
+    batch_finish_status();
     batch_active = false;
     vTaskDelete(NULL);
 }

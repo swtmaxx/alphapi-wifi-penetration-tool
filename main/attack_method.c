@@ -61,8 +61,10 @@ static bool rogue_ap_active = false;
  */
 static void refresh_deauth_clients(void)
 {
-    unsigned n = wifictl_copy_client_macs(deauth_bssid, deauth_clients, DEAUTH_CLIENT_MAX);
-    if (n > 0) deauth_client_count = n;
+    /* Assign even when the table is empty: keeping the previous list would keep
+       deauth frames going to stations that already left. */
+    deauth_client_count = wifictl_copy_client_macs(deauth_bssid, deauth_clients,
+                                                   DEAUTH_CLIENT_MAX);
 }
 
 static void timer_send_deauth_frame(void *arg){
@@ -147,6 +149,7 @@ void attack_method_broadcast(const wifi_ap_record_t *ap_record, unsigned period_
 }
 
 void attack_method_broadcast_stop(){
+    deauth_client_count = 0;
     esp_timer_handle_t handle = deauth_timer_handle;
     if (handle == NULL) return;
     /* Clear the shared handle first so a concurrent stop cannot delete it twice. */

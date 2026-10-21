@@ -55,6 +55,9 @@ void wifictl_sniffer_filter_frame_types(bool data, bool mgmt, bool ctrl);
  *
  * Default false: the Wi-Fi callback drops ordinary data frames and unrelated
  * management frames, which keeps the 32-slot queue empty during a capture.
+ * Only Beacon/Probe-Response/Action management frames and LLC 0x888e data
+ * frames are posted; association, authentication and deauthentication frames
+ * are dropped unless this is enabled.
  * The client counter sets this to true because it has to see all data frames.
  */
 void wifictl_sniffer_set_post_filter(bool post_all);

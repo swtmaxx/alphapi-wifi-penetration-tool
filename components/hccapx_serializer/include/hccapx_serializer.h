@@ -38,7 +38,8 @@ typedef struct __attribute__((__packed__)){
 /**
  * @brief Creates new HCCAPX buffer for given SSID.
  * 
- * This will clear any previous HCCAPX. If you want to save it, first call hccapx_serializer_get() and copy buffer somewhere else.
+ * This will clear any previous HCCAPX. Take a snapshot first if you need to
+ * keep the previous result.
  * @param ssid SSID of AP from which the handshake frames will be comming.
  * @param size length of SSID string (including \0)
  */
@@ -55,24 +56,17 @@ bool hccapx_serializer_early_init(void);
 /**
  * @brief Whether a usable handshake has been assembled.
  *
- * Takes the serializer lock, unlike hccapx_serializer_get(), so it is safe to
- * call from the sniffer handler while the HTTP task reads the buffer.
+ * Takes the serializer lock, so it is safe to call from the sniffer handler
+ * while the HTTP task reads the buffer.
  */
 bool hccapx_serializer_is_usable(void);
 
 /**
- * @brief Returns pointer to buffer with HCCAPX formatted binary data 
- * 
- * @return hccapx_t* 
- */
-hccapx_t *hccapx_serializer_get();
-
-/**
  * @brief Copy the current HCCAPX into caller-owned storage.
  *
- * hccapx_serializer_get() hands out a pointer into a buffer that the sniffer
- * task keeps updating, so anything that streams it (for example an HTTP
- * download) must take a snapshot instead of reading it in place.
+ * The buffer is rewritten by the sniffer task, so anything that streams it
+ * (for example an HTTP download) must take a snapshot instead of reading it in
+ * place.
  *
  * @param out destination, written only when a usable handshake is available
  * @return true when the copy was taken
