@@ -7,6 +7,7 @@
  */
 #include "signal_monitor.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"

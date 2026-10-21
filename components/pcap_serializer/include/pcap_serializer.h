@@ -208,4 +208,22 @@ pcap_storage_state_t pcap_serializer_get_state(void);
 /** Read current total, used and free storage space. */
 bool pcap_serializer_get_storage_info(pcap_storage_info_t *info);
 
+/** Summary of one stored capture, produced without loading the whole file. */
+typedef struct {
+    unsigned frames;
+    unsigned bytes;
+    unsigned eapol_frames;
+    bool has_beacon;
+    bool truncated;      /**< inspection stopped early on a large file */
+    char ssid[33];
+} pcap_inspect_t;
+
+/**
+ * @brief Inspect a stored capture: frame count, EAPOL count, Beacon SSID.
+ *
+ * Reads at most 256 KB so the on-device browser stays responsive; sets
+ * \c truncated when it stopped early.
+ */
+bool pcap_serializer_inspect(const char *name, pcap_inspect_t *out);
+
 #endif /* PCAP_SERIALIZER_H */

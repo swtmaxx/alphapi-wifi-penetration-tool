@@ -1010,6 +1010,114 @@ unsigned pcap_serializer_list_text(pcap_file_info_t *out, unsigned max)
     return count;
 }
 
+#define PCAP_INSPECT_MAX_BYTES (256u * 1024u)
+
+bool pcap_serializer_inspect(const char *name, pcap_inspect_t *out)
+{
+    if (name == NULL || out == NULL) return false;
+    if (strstr(name, "..") != NULL || strchr(name, '/') != NULL ||
+        strchr(name, '\\') != NULL || !is_stored_file_name(name)) return false;
+    if (!ensure_mutex()) return false;
+
+    memset(out, 0, sizeof(*out));
+
+    lock_serializer();
+    if (!mount_storage()) {
+        unlock_serializer();
+        return false;
+    }
+
+    char full[96];
+    if (!build_full_path(full, sizeof(full), name)) {
+        unlock_serializer();
+        return false;
+    }
+
+    /* The file currently being written has buffered bytes that are not on flash
+       yet; flush them so the browser sees what the capture actually holds. */
+    if (pcap_file != NULL && strcmp(full, pcap_cur_path) == 0) {
+        if (!flush_write_buf()) {
+            unlock_serializer();
+            return false;
+        }
+    }
+
+    FILE *file = fopen(full, "rb");
+    if (file == NULL) {
+        unlock_serializer();
+        return false;
+    }
+
+    uint8_t header[24];
+    if (fread(header, 1, sizeof(header), file) != sizeof(header)) {
+        fclose(file);
+        unlock_serializer();
+        return false;
+    }
+
+    unsigned scanned = (unsigned) sizeof(header);
+    for (;;) {
+        uint8_t rec[16];
+        if (fread(rec, 1, sizeof(rec), file) != sizeof(rec)) break;
+
+        unsigned incl = (unsigned) rec[8] | ((unsigned) rec[9] << 8) |
+                        ((unsigned) rec[10] << 16) | ((unsigned) rec[11] << 24);
+        if (incl == 0 || incl > 65535) break;
+        scanned += (unsigned) sizeof(rec) + incl;
+        if (scanned > PCAP_INSPECT_MAX_BYTES) {
+            out->truncated = true;
+            break;
+        }
+
+        uint8_t probe[64];
+        unsigned want = incl < sizeof(probe) ? incl : (unsigned) sizeof(probe);
+        if (fread(probe, 1, want, file) != want) break;
+        if (fseek(file, (long) (incl - want), SEEK_CUR) != 0) break;
+
+        out->frames++;
+
+        if (want >= 24) {
+            uint8_t fc0 = probe[0];
+            uint8_t fc1 = probe[1];
+            uint8_t ftype = (fc0 >> 2) & 0x03;
+            uint8_t subtype = (fc0 >> 4) & 0x0F;
+
+            if (ftype == 0 && subtype == 8 && !out->has_beacon) {
+                unsigned pos = 36;   /* 24-byte header + 12-byte fixed part */
+                while (pos + 2 <= want) {
+                    uint8_t id = probe[pos];
+                    uint8_t ie_len = probe[pos + 1];
+                    if (pos + 2u + ie_len > want) break;
+                    if (id == 0) {
+                        unsigned n = ie_len < sizeof(out->ssid) - 1
+                                         ? ie_len : sizeof(out->ssid) - 1;
+                        memcpy(out->ssid, probe + pos + 2, n);
+                        out->ssid[n] = '\0';
+                        out->has_beacon = true;
+                        break;
+                    }
+                    pos += 2u + ie_len;
+                }
+            } else if (ftype == 2) {
+                unsigned off = 24;
+                if ((fc1 & 0x03) == 3) off += 6;                 /* 4-address */
+                if (subtype & 0x08) off += 2;                    /* QoS */
+                if ((fc1 & 0x80) && (subtype & 0x08)) off += 4;  /* HT control */
+                if (off + 8 <= want && probe[off] == 0xAA && probe[off + 1] == 0xAA &&
+                    probe[off + 2] == 0x03 && probe[off + 6] == 0x88 &&
+                    probe[off + 7] == 0x8E) {
+                    out->eapol_frames++;
+                }
+            }
+        }
+    }
+
+    out->bytes = scanned;
+    fclose(file);
+    unlock_serializer();
+    return true;
+}
+
 pcap_storage_state_t pcap_serializer_get_state(void)
 {
     if (!ensure_mutex()) return PCAP_STORAGE_IO_ERROR;

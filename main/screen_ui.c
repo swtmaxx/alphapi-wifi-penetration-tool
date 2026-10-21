@@ -65,6 +65,7 @@ typedef enum {
     SCREEN_ATTACK_STATUS,
     SCREEN_CAPTURE,
     SCREEN_CAPTURE_DELETE,
+    SCREEN_CAPTURE_DETAIL,
     SCREEN_SIGNAL_LIST,
     SCREEN_SIGNAL_TARGET
 } screen_id_t;
@@ -748,6 +749,38 @@ static void draw_signal_target(void)
     draw_footer("确定=归零 返回=解锁");
 }
 
+static void draw_capture_detail(void)
+{
+    char buf[48];
+    pcap_inspect_t info;
+    bool ok = pcap_serializer_inspect(capture_delete_target_name, &info);
+
+    display_draw_text_utf8(3, CONTENT_Y, capture_delete_target_name, COLOR_CYAN, COLOR_BLACK);
+    if (!ok) {
+        display_draw_text_utf8(3, CONTENT_Y + LINE_H, "无法读取文件", COLOR_RED, COLOR_BLACK);
+        draw_footer("返回=文件列表");
+        return;
+    }
+
+    snprintf(buf, sizeof(buf), "帧 %u  EAPOL %u", info.frames, info.eapol_frames);
+    display_draw_text_utf8(3, CONTENT_Y + LINE_H, buf, COLOR_WHITE, COLOR_BLACK);
+
+    snprintf(buf, sizeof(buf), "%u B%s", info.bytes, info.truncated ? " (部分)" : "");
+    display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, buf, COLOR_GRAY, COLOR_BLACK);
+
+    if (info.has_beacon && info.ssid[0]) {
+        snprintf(buf, sizeof(buf), "SSID %s", info.ssid);
+    } else {
+        snprintf(buf, sizeof(buf), "SSID 未知");
+    }
+    display_draw_text_utf8(3, CONTENT_Y + 3 * LINE_H, buf, COLOR_YELLOW, COLOR_BLACK);
+
+    display_draw_text_utf8(3, CONTENT_Y + 4 * LINE_H,
+                           info.eapol_frames >= 2 ? "含握手，可尝试破解" : "无完整握手",
+                           info.eapol_frames >= 2 ? COLOR_GREEN : COLOR_GRAY, COLOR_BLACK);
+    draw_footer("确定=删除 返回=列表");
+}
+
 static void render(void)
 {
     display_fill(COLOR_BLACK);
@@ -762,6 +795,7 @@ static void render(void)
         case SCREEN_ATTACK_STATUS: draw_header("攻击状态"); draw_attack_status(); break;
         case SCREEN_CAPTURE: draw_header("抓包文件"); draw_capture(); break;
         case SCREEN_CAPTURE_DELETE: draw_header("删除文件"); draw_capture_delete(); break;
+        case SCREEN_CAPTURE_DETAIL: draw_header("文件详情"); draw_capture_detail(); break;
         case SCREEN_SIGNAL_LIST: draw_header("信号探测"); draw_signal_list(); break;
         case SCREEN_SIGNAL_TARGET: draw_header("信号追踪"); draw_signal_target(); break;
         default: break;
@@ -863,9 +897,13 @@ static void handle_enter(void)
                     sizeof(capture_delete_target_name) - 1);
             capture_delete_target_name[sizeof(capture_delete_target_name) - 1] = '\0';
             ui.capture_delete_choice = 0;
-            ui.screen = SCREEN_CAPTURE_DELETE;
+            ui.screen = SCREEN_CAPTURE_DETAIL;
             break;
         }
+        case SCREEN_CAPTURE_DETAIL:
+            ui.capture_delete_choice = 0;
+            ui.screen = SCREEN_CAPTURE_DELETE;
+            break;
         case SCREEN_CAPTURE_DELETE: {
             bool all = (ui.capture_delete_choice == 1);
             /* Delete on the worker task so a slow SPIFFS stays responsive. */
@@ -955,6 +993,9 @@ static void handle_back(void)
             break;
         case SCREEN_CAPTURE_DELETE:
             capture_delete_target_name[0] = '\0';
+            ui.screen = SCREEN_CAPTURE;
+            break;
+        case SCREEN_CAPTURE_DETAIL:
             ui.screen = SCREEN_CAPTURE;
             break;
         case SCREEN_ATTACK_STATUS:
