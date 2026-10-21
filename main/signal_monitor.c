@@ -162,7 +162,7 @@ bool signal_monitor_lock_target(const uint8_t *bssid, uint8_t channel, const cha
     }
     snapshot.target_locked = true;
     snapshot.target_channel = channel;
-    snapshot.target_rssi = 0;
+    snapshot.target_rssi = -128;
     snapshot.target_peak = -128;
     snapshot.target_trough = 0;
     snapshot.target_samples = 0;
@@ -218,7 +218,7 @@ void signal_monitor_unlock_target(void)
 void signal_monitor_reset_target_stats(void)
 {
     lock_state();
-    snapshot.target_rssi = 0;
+    snapshot.target_rssi = -128;
     snapshot.target_peak = -128;
     snapshot.target_trough = 0;
     snapshot.target_samples = 0;

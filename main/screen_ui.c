@@ -690,7 +690,7 @@ static void draw_signal_list(void)
         draw_signal_bar(2, y, ap->rssi, selected ? COLOR_BLACK : COLOR_GREEN, bg);
 
         /* "channel rssi" like the scan page, e.g. "6 -42" */
-        snprintf(buf, sizeof(buf), "%u %d", ap->channel, ap->rssi);
+        snprintf(buf, sizeof(buf), "%u %d", (unsigned) ap->channel, (int) ap->rssi);
         int16_t right_w = display_text_width(buf, 1);
         int16_t right_x = DISPLAY_WIDTH - right_w - 3;
 
@@ -763,7 +763,7 @@ static void draw_signal_target(void)
                  (unsigned long) (snap.target_idle_ms / 1000));
         display_draw_text_utf8(3, CONTENT_Y + 6 * LINE_H, buf, COLOR_RED, COLOR_BLACK);
     } else {
-        snprintf(buf, sizeof(buf), "信道 %u 样本 %lu", snap.target_channel,
+        snprintf(buf, sizeof(buf), "信道 %u 样本 %lu", (unsigned) snap.target_channel,
                  (unsigned long) snap.target_samples);
         display_draw_text_utf8(3, CONTENT_Y + 6 * LINE_H, buf, COLOR_GRAY, COLOR_BLACK);
     }
