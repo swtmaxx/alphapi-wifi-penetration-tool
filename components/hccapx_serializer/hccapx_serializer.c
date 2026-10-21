@@ -64,14 +64,6 @@ bool hccapx_serializer_early_init(void)
     return hccapx_mutex != NULL;
 }
 
-bool hccapx_serializer_is_usable(void)
-{
-    if (!hccapx_lock()) return false;
-    bool usable = (hccapx.message_pair != 255);
-    hccapx_unlock();
-    return usable;
-}
-
 /**
  * @brief Default values for hccapx buffer
  */
@@ -81,6 +73,14 @@ static hccapx_t hccapx = {
     .message_pair = 255,
     .keyver = HCCAPX_KEYVER_WPA2
 };
+
+bool hccapx_serializer_is_usable(void)
+{
+    if (!hccapx_lock()) return false;
+    bool usable = (hccapx.message_pair != 255);
+    hccapx_unlock();
+    return usable;
+}
 
 /**
  * @brief Stores last processed message
