@@ -40,6 +40,8 @@ typedef struct {
     int8_t target_trough;   /**< weakest reading since the lock */
     uint32_t target_samples;
     uint8_t target_channel;
+    uint32_t target_idle_ms;   /**< ms since the last Beacon of the target */
+    uint32_t list_age_ms;      /**< ms since the last completed scan */
 } signal_snapshot_t;
 
 /** @brief Create the internal lock. Call once from app_main. */
@@ -70,5 +72,21 @@ void signal_monitor_get(signal_snapshot_t *out);
 
 /** @brief True while a target is locked. */
 bool signal_monitor_target_locked(void);
+
+/**
+ * @brief Periodic housekeeping: re-tune a target that went silent.
+ *
+ * An AP can change channel (DFS, night mode) or the operator can walk out of
+ * range. After 5 s without a Beacon this rescans for the target BSSID and locks
+ * onto its new channel, at most once every 10 s.
+ */
+void signal_monitor_poll(void);
+
+/**
+ * @brief Rescan and re-lock the current target on whatever channel it uses now.
+ *
+ * Releases the radio, scans, and locks again when the BSSID is found.
+ */
+bool signal_monitor_retune_target(void);
 
 #endif /* SIGNAL_MONITOR_H */

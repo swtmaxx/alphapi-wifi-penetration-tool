@@ -88,6 +88,7 @@ typedef struct {
     uint8_t atk_timeout_seconds;
     uint8_t capture_index;
     uint8_t signal_index;
+    uint8_t slow_tick;
     /* 0 = ask, 1 = delete just this file, 2 = wipe everything */
     uint8_t capture_delete_choice;
     scan_state_t scan_state;
@@ -688,7 +689,8 @@ static void draw_signal_list(void)
 
         draw_signal_bar(2, y, ap->rssi, selected ? COLOR_BLACK : COLOR_GREEN, bg);
 
-        snprintf(buf, sizeof(buf), "%d", ap->rssi);
+        /* "channel rssi" like the scan page, e.g. "6 -42" */
+        snprintf(buf, sizeof(buf), "%u %d", ap->channel, ap->rssi);
         int16_t right_w = display_text_width(buf, 1);
         int16_t right_x = DISPLAY_WIDTH - right_w - 3;
 
@@ -716,7 +718,14 @@ static void draw_signal_list(void)
         display_draw_text(right_x, y, buf, fg, bg);
         y += LINE_H;
     }
-    draw_footer("确定=锁定 返回=退出");
+    char foot[28];
+    if (snap.scanning) {
+        snprintf(foot, sizeof(foot), "扫描中… 确定=锁定");
+    } else {
+        snprintf(foot, sizeof(foot), "%us前 确定=锁定",
+                 (unsigned) (snap.list_age_ms / 1000));
+    }
+    draw_footer(foot);
 }
 
 static void draw_signal_target(void)
@@ -730,6 +739,8 @@ static void draw_signal_target(void)
 
     if (snap.target_samples == 0) {
         display_draw_text_utf8(3, CONTENT_Y + LINE_H, "等待 Beacon…", COLOR_GRAY, COLOR_BLACK);
+        /* The sniffer takes the radio off the management AP channel. */
+        display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, "热点可能中断", COLOR_YELLOW, COLOR_BLACK);
         draw_footer("返回=解锁");
         return;
     }
@@ -746,9 +757,16 @@ static void draw_signal_target(void)
 
     snprintf(buf, sizeof(buf), "峰 %d 谷 %d", snap.target_peak, snap.target_trough);
     display_draw_text_utf8(3, CONTENT_Y + 5 * LINE_H, buf, COLOR_WHITE, COLOR_BLACK);
-    snprintf(buf, sizeof(buf), "信道 %u 样本 %lu", snap.target_channel,
-             (unsigned long) snap.target_samples);
-    display_draw_text_utf8(3, CONTENT_Y + 6 * LINE_H, buf, COLOR_GRAY, COLOR_BLACK);
+    if (snap.target_idle_ms > 5000) {
+        /* No Beacon for 5 s: the AP changed channel or is out of range. */
+        snprintf(buf, sizeof(buf), "丢失 %lus 重新搜索",
+                 (unsigned long) (snap.target_idle_ms / 1000));
+        display_draw_text_utf8(3, CONTENT_Y + 6 * LINE_H, buf, COLOR_RED, COLOR_BLACK);
+    } else {
+        snprintf(buf, sizeof(buf), "信道 %u 样本 %lu", snap.target_channel,
+                 (unsigned long) snap.target_samples);
+        display_draw_text_utf8(3, CONTENT_Y + 6 * LINE_H, buf, COLOR_GRAY, COLOR_BLACK);
+    }
 
     draw_footer("确定=归零 返回=解锁");
 }
@@ -1120,10 +1138,23 @@ static void ui_task(void *arg)
             ui.dirty = true;
         }
 
-        /* Only the attack status page needs periodic redraw; the capture list
-           is static and re-listing it every tick would hammer SPIFFS. */
-        if (ui.screen == SCREEN_ATTACK_STATUS) {
+        /* Live pages must redraw without waiting for a key press: the signal
+           tracker updates at 10 Hz, and the AP list re-scans every 2.5 s.
+           The capture list stays key-driven (re-listing hammers LittleFS). */
+        if (ui.screen == SCREEN_ATTACK_STATUS || ui.screen == SCREEN_SIGNAL_TARGET) {
             ui.dirty = true;
+        } else if (ui.screen == SCREEN_SIGNAL_LIST) {
+            /* The scan only produces new data every 2.5 s; half rate is enough. */
+            if (++ui.slow_tick >= 2) {
+                ui.slow_tick = 0;
+                ui.dirty = true;
+            }
+        }
+
+        /* Re-tune a target that stopped sending Beacons (channel change or out
+           of range) instead of freezing on the last reading. */
+        if (ui.screen == SCREEN_SIGNAL_TARGET) {
+            signal_monitor_poll();
         }
         vTaskDelay(pdMS_TO_TICKS(RENDER_PERIOD_MS));
     }
