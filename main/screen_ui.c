@@ -21,6 +21,7 @@
 #include "display.h"
 #include "attack.h"
 #include "pcap_serializer.h"
+#include "signal_monitor.h"
 #include "webserver.h"
 #include "wifi_controller.h"
 #include "wsl_bypasser.h"
@@ -62,7 +63,9 @@ typedef enum {
     SCREEN_ATTACK_CONFIRM,
     SCREEN_ATTACK_STATUS,
     SCREEN_CAPTURE,
-    SCREEN_CAPTURE_DELETE
+    SCREEN_CAPTURE_DELETE,
+    SCREEN_SIGNAL_LIST,
+    SCREEN_SIGNAL_TARGET
 } screen_id_t;
 
 typedef enum {
@@ -82,6 +85,7 @@ typedef struct {
     uint8_t atk_timeout_index;
     uint8_t atk_timeout_seconds;
     uint8_t capture_index;
+    uint8_t signal_index;
     /* 0 = ask, 1 = delete just this file, 2 = wipe everything */
     uint8_t capture_delete_choice;
     scan_state_t scan_state;
@@ -93,9 +97,9 @@ static ui_state_t ui;
 static const char *UI_TAG = "screen_ui";
 
 static const char *main_menu_items[] = {
-    "设备信息", "网络扫描", "抓包文件"
+    "设备信息", "网络扫描", "信号探测", "抓包文件"
 };
-#define MAIN_MENU_COUNT 3
+#define MAIN_MENU_COUNT 4
 
 static const char *attack_type_names[] = {
     "被动", "握手", "PMKID", "拒绝服务"
@@ -211,7 +215,8 @@ static void draw_status(void)
                                COLOR_RED, COLOR_BLACK);
     }
 
-    snprintf(buf, sizeof(buf), "信道 %d", CONFIG_MGMT_AP_CHANNEL);
+    snprintf(buf, sizeof(buf), "信道 %d 丢帧 %lu", CONFIG_MGMT_AP_CHANNEL,
+             (unsigned long) wifictl_sniffer_dropped_frames());
     display_draw_text_utf8(3, CONTENT_Y + 5 * LINE_H, buf, COLOR_GRAY, COLOR_BLACK);
 
     draw_footer("返回=菜单");
@@ -346,6 +351,15 @@ static void draw_attack_confirm(void)
     y += LINE_H;
     snprintf(buf, sizeof(buf), "超时 %s", timeout_names[ui.atk_timeout_index]);
     display_draw_text_utf8(3, y, buf, COLOR_WHITE, COLOR_BLACK);
+    y += LINE_H;
+    /* PMF 决定 deauth 能不能生效：强制 PMF 的目标只能走 PMKID */
+    const ap_security_t *sec = wifictl_last_ap_security();
+    if (sec != NULL && sec->pmf != AP_PMF_UNKNOWN) {
+        snprintf(buf, sizeof(buf), "PMF %s", wifictl_pmf_name(sec->pmf));
+        display_draw_text_utf8(3, y, buf,
+                               sec->pmf == AP_PMF_REQUIRED ? COLOR_RED : COLOR_WHITE,
+                               COLOR_BLACK);
+    }
     draw_footer("确定=开始 返回=取消");
 }
 
@@ -599,6 +613,120 @@ static void draw_capture_delete(void)
     draw_footer("确定=执行 返回=取消");
 }
 
+/* ---------------------------------------------------------------- */
+/* 信号探测                                                          */
+/* ---------------------------------------------------------------- */
+
+/** @brief -100..-30 dBm → 0..10 格 */
+static int signal_bars(int8_t rssi)
+{
+    int v = (int) rssi + 100;
+    if (v < 0) v = 0;
+    if (v > 70) v = 70;
+    return v / 7;
+}
+
+static void draw_signal_bar(int16_t x, int16_t y, int8_t rssi, uint16_t color, uint16_t bg)
+{
+    int bars = signal_bars(rssi);
+    display_fill_rect(x, y, 10 * 3, LINE_H, bg);
+    for (int i = 0; i < bars; i++) {
+        display_fill_rect(x + i * 3, y + 4, 2, LINE_H - 8, color);
+    }
+}
+
+static void draw_signal_list(void)
+{
+    signal_snapshot_t snap;
+    signal_monitor_get(&snap);
+    char buf[16];
+
+    if (snap.count == 0) {
+        display_draw_text_utf8(3, CONTENT_Y, snap.scanning ? "正在扫描" : "未发现网络",
+                               snap.scanning ? COLOR_YELLOW : COLOR_GRAY, COLOR_BLACK);
+        draw_footer("返回=退出");
+        return;
+    }
+    if (ui.signal_index >= snap.count) ui.signal_index = (uint8_t) (snap.count - 1);
+
+    int16_t y = CONTENT_Y;
+    uint8_t shown = 0;
+    uint8_t scroll = ui.signal_index >= AP_VISIBLE ? (uint8_t) (ui.signal_index - AP_VISIBLE + 1) : 0;
+
+    for (unsigned i = scroll; i < snap.count && shown < AP_VISIBLE; i++, shown++) {
+        const signal_ap_t *ap = &snap.aps[i];
+        bool selected = (i == ui.signal_index);
+        uint16_t fg = selected ? COLOR_BLACK : COLOR_WHITE;
+        uint16_t bg = selected ? COLOR_YELLOW : COLOR_BLACK;
+        display_fill_rect(1, y, DISPLAY_WIDTH - 2, LINE_H, bg);
+
+        draw_signal_bar(2, y, ap->rssi, selected ? COLOR_BLACK : COLOR_GREEN, bg);
+
+        snprintf(buf, sizeof(buf), "%d", ap->rssi);
+        int16_t right_w = display_text_width(buf, 1);
+        int16_t right_x = DISPLAY_WIDTH - right_w - 3;
+
+        /* SSID 按渲染宽度截断，避免压到右侧 RSSI 列 */
+        char clipped[40];
+        int16_t avail = right_x - 36 - 2;
+        int16_t used = 0;
+        size_t out = 0;
+        const char *name = ap->ssid[0] ? ap->ssid : "(隐藏)";
+        for (const uint8_t *p = (const uint8_t *) name; *p != '\0' && used < avail; ) {
+            size_t step = 1;
+            int16_t w = 6;
+            if ((p[0] & 0xE0) == 0xC0) { step = 2; w = 16; }
+            else if ((p[0] & 0xF0) == 0xE0) { step = 3; w = 16; }
+            else if ((p[0] & 0xF8) == 0xF0) { step = 4; w = 16; }
+            if (used + w > avail || out + step >= sizeof(clipped)) break;
+            memcpy(&clipped[out], p, step);
+            out += step;
+            used += w;
+            p += step;
+        }
+        clipped[out] = '\0';
+
+        display_draw_text_utf8(36, y, clipped, fg, bg);
+        display_draw_text(right_x, y, buf, fg, bg);
+        y += LINE_H;
+    }
+    draw_footer("确定=锁定 返回=退出");
+}
+
+static void draw_signal_target(void)
+{
+    signal_snapshot_t snap;
+    signal_monitor_get(&snap);
+    char buf[40];
+
+    display_draw_text_utf8(3, CONTENT_Y, snap.target_ssid[0] ? snap.target_ssid : "(隐藏)",
+                           COLOR_CYAN, COLOR_BLACK);
+
+    if (snap.target_samples == 0) {
+        display_draw_text_utf8(3, CONTENT_Y + LINE_H, "等待 Beacon…", COLOR_GRAY, COLOR_BLACK);
+        draw_footer("返回=解锁");
+        return;
+    }
+
+    snprintf(buf, sizeof(buf), "%d dBm", snap.target_rssi);
+    display_draw_text_scaled(3, CONTENT_Y + LINE_H, buf, COLOR_GREEN, COLOR_BLACK, 2);
+
+    int width = (int) snap.target_rssi + 100;
+    if (width < 0) width = 0;
+    if (width > 70) width = 70;
+    int px = (width * (DISPLAY_WIDTH - 6)) / 70;
+    display_fill_rect(3, CONTENT_Y + 4 * LINE_H, DISPLAY_WIDTH - 6, 8, COLOR_DARKGRAY);
+    display_fill_rect(3, CONTENT_Y + 4 * LINE_H, px, 8, COLOR_GREEN);
+
+    snprintf(buf, sizeof(buf), "峰 %d 谷 %d", snap.target_peak, snap.target_trough);
+    display_draw_text_utf8(3, CONTENT_Y + 5 * LINE_H, buf, COLOR_WHITE, COLOR_BLACK);
+    snprintf(buf, sizeof(buf), "信道 %u 样本 %lu", snap.target_channel,
+             (unsigned long) snap.target_samples);
+    display_draw_text_utf8(3, CONTENT_Y + 6 * LINE_H, buf, COLOR_GRAY, COLOR_BLACK);
+
+    draw_footer("确定=归零 返回=解锁");
+}
+
 static void render(void)
 {
     display_fill(COLOR_BLACK);
@@ -613,6 +741,8 @@ static void render(void)
         case SCREEN_ATTACK_STATUS: draw_header("攻击状态"); draw_attack_status(); break;
         case SCREEN_CAPTURE: draw_header("抓包文件"); draw_capture(); break;
         case SCREEN_CAPTURE_DELETE: draw_header("删除文件"); draw_capture_delete(); break;
+        case SCREEN_SIGNAL_LIST: draw_header("信号探测"); draw_signal_list(); break;
+        case SCREEN_SIGNAL_TARGET: draw_header("信号追踪"); draw_signal_target(); break;
         default: break;
     }
     display_flush();
@@ -687,6 +817,11 @@ static void handle_enter(void)
                     ui.capture_index = 0;
                     capture_cache_refresh();
                     break;
+                case 3:
+                    ui.screen = SCREEN_SIGNAL_LIST;
+                    ui.signal_index = 0;
+                    signal_monitor_start_list();
+                    break;
                 default: break;
             }
             break;
@@ -719,6 +854,20 @@ static void handle_enter(void)
             }
             break;
         }
+        case SCREEN_SIGNAL_LIST: {
+            signal_snapshot_t snap;
+            signal_monitor_get(&snap);
+            if (snap.count == 0) break;
+            if (ui.signal_index >= snap.count) ui.signal_index = (uint8_t) (snap.count - 1);
+            const signal_ap_t *ap = &snap.aps[ui.signal_index];
+            if (signal_monitor_lock_target(ap->bssid, ap->channel, ap->ssid)) {
+                ui.screen = SCREEN_SIGNAL_TARGET;
+            }
+            break;
+        }
+        case SCREEN_SIGNAL_TARGET:
+            signal_monitor_reset_target_stats();
+            break;
         case SCREEN_STATUS:
             ui.screen = SCREEN_MAIN_MENU;
             ui.menu_index = 0;
@@ -772,6 +921,16 @@ static void handle_back(void)
             ui.screen = SCREEN_MAIN_MENU;
             ui.menu_index = 0;
             break;
+        case SCREEN_SIGNAL_LIST:
+            signal_monitor_stop_list();
+            ui.screen = SCREEN_MAIN_MENU;
+            ui.menu_index = 0;
+            break;
+        case SCREEN_SIGNAL_TARGET:
+            signal_monitor_unlock_target();
+            ui.screen = SCREEN_SIGNAL_LIST;
+            signal_monitor_start_list();
+            break;
         case SCREEN_CAPTURE_DELETE:
             capture_delete_target_name[0] = '\0';
             ui.screen = SCREEN_CAPTURE;
@@ -809,6 +968,7 @@ static void handle_up(void)
             ui.menu_index = (ui.menu_index + TIMEOUT_COUNT - 1) % TIMEOUT_COUNT;
             break;
         case SCREEN_CAPTURE: if (ui.capture_index > 0) ui.capture_index--; break;
+        case SCREEN_SIGNAL_LIST: if (ui.signal_index > 0) ui.signal_index--; break;
         case SCREEN_CAPTURE_DELETE:
             ui.capture_delete_choice = (ui.capture_delete_choice + 2 - 1) % 2;
             break;
@@ -840,6 +1000,12 @@ static void handle_down(void)
             if (capture_cache_count == 0) capture_cache_refresh();
             if (ui.capture_index + 1 < capture_cache_count) ui.capture_index++;
             break;
+        case SCREEN_SIGNAL_LIST: {
+            signal_snapshot_t snap;
+            signal_monitor_get(&snap);
+            if (snap.count > 0 && ui.signal_index + 1 < snap.count) ui.signal_index++;
+            break;
+        }
         case SCREEN_CAPTURE_DELETE:
             ui.capture_delete_choice = (ui.capture_delete_choice + 1) % 2;
             break;
@@ -909,6 +1075,7 @@ void screen_ui_init(void)
     ui.dirty = true;
 
     display_init();
+    signal_monitor_init();
     if (xTaskCreate(ui_task, "screen_ui", UI_TASK_STACK, NULL, UI_TASK_PRIO, NULL) != pdPASS) {
         printf("[%s] failed to create ui task\n", UI_TAG);
     }
