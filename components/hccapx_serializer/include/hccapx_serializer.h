@@ -45,6 +45,22 @@ typedef struct __attribute__((__packed__)){
 void hccapx_serializer_init(const uint8_t *ssid, unsigned size);
 
 /**
+ * @brief Creates the serializer mutex before any task can race for it.
+ *
+ * Must be called from app_main; the lazy fallback inside the serializer is
+ * kept only so a missed call cannot deadlock the device.
+ */
+bool hccapx_serializer_early_init(void);
+
+/**
+ * @brief Whether a usable handshake has been assembled.
+ *
+ * Takes the serializer lock, unlike hccapx_serializer_get(), so it is safe to
+ * call from the sniffer handler while the HTTP task reads the buffer.
+ */
+bool hccapx_serializer_is_usable(void);
+
+/**
  * @brief Returns pointer to buffer with HCCAPX formatted binary data 
  * 
  * @return hccapx_t* 

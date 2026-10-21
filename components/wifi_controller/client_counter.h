@@ -39,8 +39,26 @@ bool wifictl_client_counting_active(void);
 
 /**
  * @brief Number of distinct clients seen for the given BSSID (0 if none).
+ *
+ * The value saturates at CLIENT_COUNT_MAX_CLIENTS; use
+ * wifictl_client_count_saturated() to know whether it is a lower bound.
  */
 uint8_t wifictl_get_client_count(const uint8_t bssid[6]);
+
+/**
+ * @brief True when more clients were seen than the table could store.
+ */
+bool wifictl_client_count_saturated(const uint8_t bssid[6]);
+
+/**
+ * @brief Copy the client MACs observed for one BSSID.
+ *
+ * @param bssid target AP
+ * @param out   destination array of 6-byte MACs
+ * @param max   capacity of out
+ * @return number of MACs copied
+ */
+unsigned wifictl_copy_client_macs(const uint8_t bssid[6], uint8_t (*out)[6], unsigned max);
 
 /**
  * @brief Clear all previously counted clients and AP entries.

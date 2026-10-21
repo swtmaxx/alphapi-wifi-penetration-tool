@@ -349,27 +349,32 @@ char *attack_alloc_result_content(unsigned size) {
 }
 
 /**
- * @brief Callback function for attack timeout timer.
- * 
- * This function is called when attack times out. 
- * It updates attack status state to TIMEOUT.
- * It calls appropriate abort functions based on current attack type.
- * @param arg not used.
+ * @brief Deferred teardown after the attack timeout fired.
+ *
+ * attack_timeout() runs on the esp_timer task, whose stack is only 3584 bytes
+ * (CONFIG_ESP_TIMER_TASK_STACK_SIZE). Tearing a handshake capture down there
+ * walks fclose()/fsync() through LittleFS, which risks a stack overflow and
+ * delays every other timer. The timer callback now only claims the state and
+ * hands the actual teardown to this task.
  */
-static void attack_timeout(void* arg){
-    ESP_LOGD(TAG, "Attack timed out");
+static void timeout_stop_task(void *arg)
+{
+    uint32_t my_generation = (uint32_t) (uintptr_t) arg;
+    vTaskDelay(pdMS_TO_TICKS(200));
 
     uint8_t type;
     status_lock();
-    if (attack_status.state != RUNNING) {
-        status_unlock();
-        return;
-    }
-    attack_status.state = TIMEOUT;
+    bool current = (attack_status.state == TIMEOUT) &&
+                   (attack_generation == my_generation);
     type = attack_status.type;
     status_unlock();
 
-    switch(type) {
+    if (!current) {
+        vTaskDelete(NULL);
+        return;
+    }
+
+    switch (type) {
         case ATTACK_TYPE_PMKID:
             ESP_LOGI(TAG, "Aborting PMKID attack...");
             attack_pmkid_stop();
@@ -387,6 +392,32 @@ static void attack_timeout(void* arg){
             break;
         default:
             ESP_LOGE(TAG, "Unknown attack type. Not aborting anything");
+    }
+    vTaskDelete(NULL);
+}
+
+/**
+ * @brief Callback function for attack timeout timer.
+ * 
+ * This function is called when attack times out. 
+ * It updates attack status state to TIMEOUT.
+ * It hands the teardown to timeout_stop_task().
+ * @param arg not used.
+ */
+static void attack_timeout(void* arg){
+    ESP_LOGD(TAG, "Attack timed out");
+
+    status_lock();
+    if (attack_status.state != RUNNING) {
+        status_unlock();
+        return;
+    }
+    attack_status.state = TIMEOUT;
+    status_unlock();
+
+    void *generation = (void *) (uintptr_t) attack_generation;
+    if (xTaskCreate(timeout_stop_task, "atk_timeout", 4096, generation, 5, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to schedule the timeout teardown");
     }
 }
 

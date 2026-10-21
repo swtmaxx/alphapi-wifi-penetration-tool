@@ -35,6 +35,16 @@ static esp_event_loop_handle_t sniffer_loop = NULL;
 
 static volatile bool sniffer_active = false;
 static volatile uint32_t sniffer_dropped = 0;
+/* When false (the default) the Wi-Fi callback drops every frame that cannot
+ * possibly matter for a capture: ordinary data frames and unrelated management
+ * frames. Only the client counter turns this off, because it needs to see all
+ * data frames to identify clients. */
+static volatile bool sniffer_post_all = false;
+
+void wifictl_sniffer_set_post_filter(bool post_all)
+{
+    sniffer_post_all = post_all;
+}
 
 uint32_t wifictl_sniffer_dropped_frames(void)
 {
@@ -72,6 +82,44 @@ bool wifictl_sniffer_loop_ready(void)
 }
 
 /**
+ * @brief Whether a frame can be useful for capture, decided in the Wi-Fi callback.
+ *
+ * Posting every data frame to the event loop used to fill the 32-slot queue on
+ * any busy network (video streaming alone is ~99% of the frames), so the EAPOL
+ * frames we actually need were dropped before frame_analyzer ever saw them.
+ * Filtering here keeps the queue almost empty during a capture.
+ */
+static bool frame_is_interesting(const uint8_t *payload, uint16_t len, wifi_promiscuous_pkt_type_t type)
+{
+    if (payload == NULL || len < 24) return false;
+
+    uint8_t fc0 = payload[0];
+    uint8_t fc1 = payload[1];
+    uint8_t ftype = (fc0 >> 2) & 0x03;
+    uint8_t subtype = (fc0 >> 4) & 0x0F;
+
+    if (type == WIFI_PKT_MGMT || ftype == 0) {
+        /* beacon(8) / probe response(5) / action(13) carry the SSID, RSN and
+           CSA information; assoc/auth frames are not needed for capture. */
+        return subtype == 8 || subtype == 5 || subtype == 13;
+    }
+
+    if (type == WIFI_PKT_DATA || ftype == 2) {
+        unsigned offset = 24;
+        if ((fc1 & 0x03) == 3) offset += 6;              /* 4-address */
+        if (subtype & 0x08) offset += 2;                 /* QoS control */
+        if ((fc1 & 0x80) && (subtype & 0x08)) offset += 4; /* HT control */
+        if (len < offset + 8) return false;
+        const uint8_t *llc = payload + offset;
+        /* LLC/SNAP + EAPOL ethertype 0x888e */
+        return llc[0] == 0xAA && llc[1] == 0xAA && llc[2] == 0x03 &&
+               llc[6] == 0x88 && llc[7] == 0x8E;
+    }
+
+    return false;   /* control frames never matter */
+}
+
+/**
  * @brief Callback for promiscuous reciever. 
  * 
  * It forwards captured frames into event pool and sorts them based on their type
@@ -89,6 +137,11 @@ static void frame_handler(void *buf, wifi_promiscuous_pkt_type_t type) {
     if (sniffer_loop == NULL) return;
 
     wifi_promiscuous_pkt_t *frame = (wifi_promiscuous_pkt_t *) buf;
+
+    if (!sniffer_post_all &&
+        !frame_is_interesting(frame->payload, frame->rx_ctrl.sig_len, type)) {
+        return;
+    }
 
     int32_t event_id;
     switch (type) {

@@ -16,6 +16,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "frame_analyzer.h"
 #include "frame_analyzer_types.h"
 #include "frame_analyzer_parser.h"
@@ -36,10 +37,40 @@
 static char *TAG = "hccapx_serializer";
 
 /* The sniffer task writes the HCCAPX buffer while the HTTP task may read it, so
-   both sides go through this lock (a short critical section is enough: the
-   structure is 393 bytes and only a handful of EAPOL frames are processed per
-   attack). */
-static portMUX_TYPE hccapx_mux = portMUX_INITIALIZER_UNLOCKED;
+   both sides go through this lock.
+
+   This used to be a portMUX_TYPE critical section, which disabled interrupts
+   while the M1-M4 state machine parsed the frame and emitted ESP_LOG lines.
+   Those logs go to the USB CDC console, so the device was doing serial I/O with
+   interrupts off on every captured EAPOL frame. A mutex gives the same mutual
+   exclusion without blocking interrupts. */
+static SemaphoreHandle_t hccapx_mutex = NULL;
+
+static bool hccapx_lock(void)
+{
+    if (hccapx_mutex == NULL && !hccapx_serializer_early_init()) return false;
+    return xSemaphoreTake(hccapx_mutex, portMAX_DELAY) == pdTRUE;
+}
+
+static void hccapx_unlock(void)
+{
+    if (hccapx_mutex != NULL) xSemaphoreGive(hccapx_mutex);
+}
+
+bool hccapx_serializer_early_init(void)
+{
+    if (hccapx_mutex != NULL) return true;
+    hccapx_mutex = xSemaphoreCreateMutex();
+    return hccapx_mutex != NULL;
+}
+
+bool hccapx_serializer_is_usable(void)
+{
+    if (!hccapx_lock()) return false;
+    bool usable = (hccapx.message_pair != 255);
+    hccapx_unlock();
+    return usable;
+}
 
 /**
  * @brief Default values for hccapx buffer
@@ -82,7 +113,7 @@ static bool is_array_zero(uint8_t *array, unsigned size){
 }
 
 void hccapx_serializer_init(const uint8_t *ssid, unsigned size){
-    portENTER_CRITICAL(&hccapx_mux);
+    if (!hccapx_lock()) return;
     /* Reset the whole handshake state, not just message_pair.
      *
      * message_ap / message_sta / eapol_source drive the M1-M4 state machine.
@@ -106,9 +137,12 @@ void hccapx_serializer_init(const uint8_t *ssid, unsigned size){
     hccapx.essid_len = size;
     memcpy(hccapx.essid, ssid, size);
     hccapx.message_pair = 255;
-    portEXIT_CRITICAL(&hccapx_mux);
+    hccapx_unlock();
 }
 
+/* Returns a pointer into the shared buffer. Only safe when no capture is
+   running; use hccapx_serializer_snapshot() or hccapx_serializer_is_usable()
+   from other tasks. */
 hccapx_t *hccapx_serializer_get(){
     if(hccapx.message_pair == 255){
         return NULL;
@@ -119,11 +153,10 @@ hccapx_t *hccapx_serializer_get(){
 
 bool hccapx_serializer_snapshot(hccapx_t *out)
 {
-    if (out == NULL) return false;
-    portENTER_CRITICAL(&hccapx_mux);
+    if (out == NULL || !hccapx_lock()) return false;
     bool valid = (hccapx.message_pair != 255);
     if (valid) *out = hccapx;
-    portEXIT_CRITICAL(&hccapx_mux);
+    hccapx_unlock();
     return valid;
 }
 
@@ -341,9 +374,9 @@ static void sta_message(data_frame_t *frame, eapol_packet_t* eapol_packet,
 static void hccapx_serializer_add_frame_locked(data_frame_t *frame, unsigned frame_len);
 
 void hccapx_serializer_add_frame(data_frame_t *frame, unsigned frame_len){
-    portENTER_CRITICAL(&hccapx_mux);
+    if (!hccapx_lock()) return;
     hccapx_serializer_add_frame_locked(frame, frame_len);
-    portEXIT_CRITICAL(&hccapx_mux);
+    hccapx_unlock();
 }
 
 static void hccapx_serializer_add_frame_locked(data_frame_t *frame, unsigned frame_len){

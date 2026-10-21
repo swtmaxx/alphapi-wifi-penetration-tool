@@ -51,6 +51,15 @@ bool wifictl_sniffer_loop_ready(void);
 void wifictl_sniffer_filter_frame_types(bool data, bool mgmt, bool ctrl);
 
 /**
+ * @brief Post every frame to the event loop instead of only capture-relevant ones.
+ *
+ * Default false: the Wi-Fi callback drops ordinary data frames and unrelated
+ * management frames, which keeps the 32-slot queue empty during a capture.
+ * The client counter sets this to true because it has to see all data frames.
+ */
+void wifictl_sniffer_set_post_filter(bool post_all);
+
+/**
  * @brief Start promiscuous mode on given channel
  * 
  * @param channel channel on which sniffer should operate

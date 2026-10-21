@@ -22,6 +22,7 @@
 
 #include "attack.h"
 #include "debug_log.h"
+#include "hccapx_serializer.h"
 #include "screen_ui.h"
 #include "pcap_serializer.h"
 #include "wifi_controller.h"
@@ -49,7 +50,8 @@ void app_main(void)
 
     /* Create the component locks and the sniffer event loop before any task can
        race for them (the lazy initialisers were not thread safe). */
-    if (!wifictl_early_init() || !pcap_serializer_early_init()) {
+    if (!wifictl_early_init() || !pcap_serializer_early_init() ||
+        !hccapx_serializer_early_init()) {
         printf("warning: failed to create internal locks\n");
     }
 

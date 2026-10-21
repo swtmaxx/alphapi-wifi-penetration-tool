@@ -38,10 +38,11 @@
 static const char *TAG = "client_counter";
 
 /* Internal DRAM is the scarce resource here (the ESP-IDF 6.x image needs
-   ~24 KB more of it than 5.0 did). 16 APs x 8 clients is plenty for a
-   13-channel sweep; the counters are an estimate anyway. */
-#define CLIENT_COUNT_MAX_AP      16
-#define CLIENT_COUNT_MAX_CLIENTS 8
+   ~24 KB more of it than 5.0 did). 24 APs x 16 clients covers a 13-channel
+   sweep and the default scan limit (CONFIG_SCAN_MAX_AP = 20); the counters are
+   an estimate anyway. */
+#define CLIENT_COUNT_MAX_AP      24
+#define CLIENT_COUNT_MAX_CLIENTS 16
 #define CLIENT_COUNT_DWELL_MS    2000
 #define CLIENT_COUNT_MAX_CHANNEL 13
 
@@ -49,6 +50,9 @@ typedef struct {
     uint8_t bssid[6];
     uint8_t macs[CLIENT_COUNT_MAX_CLIENTS][6];
     uint8_t count;
+    /* True once the table was full and a MAC had to be discarded, so the UI can
+       show "16+" instead of pretending the count is exact. */
+    bool saturated;
 } client_entry_t;
 
 static LARGE_RAM_ATTR client_entry_t entries[CLIENT_COUNT_MAX_AP];
@@ -132,6 +136,7 @@ static void client_frame_handler(void *arg, esp_event_base_t base, int32_t id, v
         slot = (int)entry_count++;
         memcpy(entries[slot].bssid, dst, 6);
         entries[slot].count = 0;
+        entries[slot].saturated = false;
     }
 
     for (unsigned i = 0; i < entries[slot].count; i++) {
@@ -143,6 +148,8 @@ static void client_frame_handler(void *arg, esp_event_base_t base, int32_t id, v
     if (entries[slot].count < CLIENT_COUNT_MAX_CLIENTS) {
         memcpy(entries[slot].macs[entries[slot].count], src, 6);
         entries[slot].count++;
+    } else {
+        entries[slot].saturated = true;
     }
     xSemaphoreGive(counter_mutex);
 }
@@ -165,6 +172,7 @@ static void client_counting_task(void *arg)
         ESP_LOGW(TAG, "No scanned APs; run a network scan first");
         /* Do not leave the sniffer handler registered: it would keep walking the
            table on every captured frame for no reason. */
+        wifictl_sniffer_set_post_filter(false);
         unregister_handler();
         counting_active = false;
         vTaskDelete(NULL);
@@ -172,6 +180,10 @@ static void client_counting_task(void *arg)
     }
 
     wifictl_clear_client_counts();
+
+    /* Counting needs every data frame, not just EAPOL: the callback filter must
+       be relaxed for the duration of the sweep. */
+    wifictl_sniffer_set_post_filter(true);
 
     /* Remember the BSSIDs to count for; the sniffer handler filters on them. */
     if (ensure_mutex()) {
@@ -207,6 +219,7 @@ static void client_counting_task(void *arg)
     if (handler_registered) {
         unregister_handler();
     }
+    wifictl_sniffer_set_post_filter(false);
 
     /* Restore the management AP on its configured channel. */
     wifictl_set_channel(CONFIG_MGMT_AP_CHANNEL);
@@ -263,4 +276,45 @@ uint8_t wifictl_get_client_count(const uint8_t bssid[6])
     }
     xSemaphoreGive(counter_mutex);
     return result;
+}
+
+bool wifictl_client_count_saturated(const uint8_t bssid[6])
+{
+    if (!ensure_mutex()) return false;
+    bool saturated = false;
+    xSemaphoreTake(counter_mutex, portMAX_DELAY);
+    for (unsigned i = 0; i < entry_count; i++) {
+        if (memcmp(entries[i].bssid, bssid, 6) == 0) {
+            saturated = entries[i].saturated;
+            break;
+        }
+    }
+    xSemaphoreGive(counter_mutex);
+    return saturated;
+}
+
+/**
+ * @brief Copy the client MACs observed for one BSSID.
+ *
+ * Used by the deauthentication path to aim at a specific station instead of
+ * broadcasting to everyone (most clients discard group-addressed deauth).
+ *
+ * @return number of MACs copied
+ */
+unsigned wifictl_copy_client_macs(const uint8_t bssid[6], uint8_t (*out)[6], unsigned max)
+{
+    if (out == NULL || max == 0 || !ensure_mutex()) return 0;
+
+    unsigned copied = 0;
+    xSemaphoreTake(counter_mutex, portMAX_DELAY);
+    for (unsigned i = 0; i < entry_count && copied < max; i++) {
+        if (memcmp(entries[i].bssid, bssid, 6) != 0) continue;
+        unsigned n = entries[i].count < max - copied ? entries[i].count : max - copied;
+        for (unsigned j = 0; j < n; j++) {
+            memcpy(out[copied++], entries[i].macs[j], 6);
+        }
+        break;
+    }
+    xSemaphoreGive(counter_mutex);
+    return copied;
 }

@@ -664,6 +664,35 @@ static httpd_uri_t uri_logs_get = {
     .user_ctx = NULL
 };
 
+/**
+ * @brief Runtime counters that used to be invisible on the device.
+ *
+ * The sniffer drops frames instead of blocking the Wi-Fi driver, so the drop
+ * count is the only way to tell whether a capture lost traffic.
+ */
+static esp_err_t uri_stats_get_handler(httpd_req_t *req)
+{
+    char body[160];
+    int len = snprintf(body, sizeof(body),
+                       "{\"dropped\":%lu,\"pcap_frames\":%u,\"pcap_size\":%u,"
+                       "\"storage\":\"%s\"}",
+                       (unsigned long) wifictl_sniffer_dropped_frames(),
+                       pcap_serializer_get_frame_count(),
+                       pcap_serializer_get_size(),
+                       storage_state_name(pcap_serializer_get_state()));
+    set_security_headers(req);
+    esp_err_t res = httpd_resp_set_type(req, "application/json; charset=utf-8");
+    if (res != ESP_OK) return res;
+    return httpd_resp_send(req, body, len);
+}
+
+static httpd_uri_t uri_stats_get = {
+    .uri = "/stats",
+    .method = HTTP_GET,
+    .handler = uri_stats_get_handler,
+    .user_ctx = NULL
+};
+
 void webserver_run(){
     ESP_LOGD(TAG, "Running webserver");
 
@@ -694,4 +723,5 @@ void webserver_run(){
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_count_clients_post));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_count_clients_status_get));
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_logs_get));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &uri_stats_get));
 }
