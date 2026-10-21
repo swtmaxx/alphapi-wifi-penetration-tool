@@ -693,7 +693,8 @@
                 break;
             case AttackTypeEnum.ATTACK_TYPE_PMKID:
                 console.log("PMKID configuration");
-                document.getElementById("attack_timeout").value = 5;
+                document.getElementById("attack_timeout").value = 60;
+                setAttackMethods(["单目标（选中 AP）", "批量扫描全部 AP"]);
                 break;
             case AttackTypeEnum.ATTACK_TYPE_DOS:
                 console.log("DOS configuration");

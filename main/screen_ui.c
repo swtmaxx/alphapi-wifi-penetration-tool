@@ -20,6 +20,7 @@
 
 #include "display.h"
 #include "attack.h"
+#include "attack_pmkid.h"
 #include "pcap_serializer.h"
 #include "signal_monitor.h"
 #include "webserver.h"
@@ -116,6 +117,11 @@ static const char *dos_method_names[] = {
 };
 #define DOS_METHOD_COUNT 3
 
+static const char *pmkid_method_names[] = {
+    "单目标", "批量扫描"
+};
+#define PMKID_METHOD_COUNT 2
+
 static const uint8_t timeout_values[] = {0, 10, 30, 60, 120};
 static const char *timeout_names[] = {"无限", "10 秒", "30 秒", "60 秒", "120 秒"};
 #define TIMEOUT_COUNT 5
@@ -136,6 +142,7 @@ static uint8_t method_count(void)
 {
     if (ui.atk_type == ATTACK_TYPE_HANDSHAKE) return HANDSHAKE_METHOD_COUNT;
     if (ui.atk_type == ATTACK_TYPE_DOS) return DOS_METHOD_COUNT;
+    if (ui.atk_type == ATTACK_TYPE_PMKID) return PMKID_METHOD_COUNT;
     return 1;
 }
 
@@ -146,6 +153,9 @@ static const char *method_name(uint8_t index)
     }
     if (ui.atk_type == ATTACK_TYPE_DOS) {
         return index < DOS_METHOD_COUNT ? dos_method_names[index] : "-";
+    }
+    if (ui.atk_type == ATTACK_TYPE_PMKID) {
+        return index < PMKID_METHOD_COUNT ? pmkid_method_names[index] : "-";
     }
     return "-";
 }
@@ -380,7 +390,18 @@ static void draw_attack_status(void)
              status.type < ATTACK_TYPE_COUNT ? attack_type_names[status.type] : "-");
     display_draw_text_utf8(3, CONTENT_Y + LINE_H, buf, COLOR_WHITE, COLOR_BLACK);
 
-    if (status.state == STORAGE_ERROR) {
+    unsigned batch_done = 0, batch_total = 0, batch_hits = 0;
+    attack_pmkid_batch_progress(&batch_done, &batch_total, &batch_hits);
+
+    if (status.type == ATTACK_TYPE_PMKID && batch_total > 0) {
+        /* Batch sweep: progress is more useful than the result blob. */
+        snprintf(buf, sizeof(buf), "已测 %u/%u 命中 %u", batch_done, batch_total, batch_hits);
+        display_draw_text_utf8(3, CONTENT_Y + 2 * LINE_H, buf, COLOR_CYAN, COLOR_BLACK);
+        if (status.state != RUNNING) {
+            display_draw_text_utf8(3, CONTENT_Y + 3 * LINE_H, "结果见 pmkid_*.txt",
+                                   COLOR_GRAY, COLOR_BLACK);
+        }
+    } else if (status.state == STORAGE_ERROR) {
         /* Only this page needs the text, so take the (potentially large)
            snapshot just here instead of on every redraw. */
         char message[48] = "抓包文件保存失败";
@@ -874,7 +895,8 @@ static void handle_enter(void)
             break;
         case SCREEN_ATTACK_TYPE:
             ui.atk_type = ui.menu_index;
-            if (ui.atk_type == ATTACK_TYPE_HANDSHAKE || ui.atk_type == ATTACK_TYPE_DOS) {
+            if (ui.atk_type == ATTACK_TYPE_HANDSHAKE || ui.atk_type == ATTACK_TYPE_DOS ||
+                ui.atk_type == ATTACK_TYPE_PMKID) {
                 ui.screen = SCREEN_ATTACK_METHOD;
                 ui.menu_index = ui.atk_method;
             } else {
