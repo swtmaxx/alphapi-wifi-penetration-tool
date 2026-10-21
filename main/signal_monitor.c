@@ -21,8 +21,6 @@
 #include "sdkconfig.h"
 
 #include "wifi_controller.h"
-#include "ap_scanner.h"
-#include "sniffer.h"
 
 static const char *TAG = "signal_monitor";
 

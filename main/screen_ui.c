@@ -611,7 +611,6 @@ static void draw_capture(void)
  */
 static void draw_capture_delete(void)
 {
-    char buf[48];
     if (capture_cache_count == 0) capture_cache_refresh();
 
     display_draw_text_utf8(3, CONTENT_Y, "确认删除？", COLOR_RED, COLOR_BLACK);
