@@ -9,6 +9,7 @@
  */
 #include "client_counter.h"
 
+#include <stdlib.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -55,10 +56,14 @@ typedef struct {
     bool saturated;
 } client_entry_t;
 
-static LARGE_RAM_ATTR client_entry_t entries[CLIENT_COUNT_MAX_AP];
+/* The table lives on the heap: at 24 APs x 16 clients it is 2.6 KB of BSS, and
+   the ESP-IDF 6.1 image already overflows the static DRAM region on this chip.
+   Allocating it at boot keeps the static region small; the sweep only runs on
+   demand, so paying for it lazily is also the right trade. */
+static client_entry_t *entries = NULL;
 static unsigned entry_count = 0;
 /* BSSIDs we are counting for, filled at the start of every sweep. */
-static LARGE_RAM_ATTR uint8_t tracked_bssids[CLIENT_COUNT_MAX_AP][6];
+static uint8_t (*tracked_bssids)[6] = NULL;
 static unsigned tracked_bssid_count = 0;
 static SemaphoreHandle_t counter_mutex = NULL;
 static volatile bool counting_active = false;
@@ -67,7 +72,19 @@ static bool handler_registered = false;
 static bool ensure_mutex(void)
 {
     if (counter_mutex == NULL) counter_mutex = xSemaphoreCreateMutex();
-    return counter_mutex != NULL;
+    if (counter_mutex == NULL) return false;
+
+    if (entries == NULL) {
+        entries = calloc(CLIENT_COUNT_MAX_AP, sizeof(*entries));
+    }
+    if (tracked_bssids == NULL) {
+        tracked_bssids = calloc(CLIENT_COUNT_MAX_AP, sizeof(*tracked_bssids));
+    }
+    if (entries == NULL || tracked_bssids == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate the client tables");
+        return false;
+    }
+    return true;
 }
 
 bool wifictl_client_counter_early_init(void)
